@@ -11,7 +11,7 @@ function getSettings() {
   const s = {};
   for (const row of rows) s[row.key] = row.value;
   return {
-    ollamaHost: s.ollama_host || 'http://localhost:11434',
+    ollamaHost: s.ollama_host || 'http://127.0.0.1:11434',
     ollamaModel: s.ollama_model || 'llama3.2-vision',
     confidenceThreshold: parseInt(s.confidence_threshold || '75', 10),
     claudeEnabled: s.claude_api_enabled === 'true',

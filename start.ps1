@@ -68,7 +68,7 @@ New-Item -ItemType Directory -Path $UPLOAD_DIR -Force | Out-Null
 # ── 4. Ollama prüfen ───────────────────────────────────────────────────────
 Write-Host "[3/4] Prüfe Ollama..." -ForegroundColor Yellow
 try {
-    $ollamaResp = Invoke-WebRequest -Uri "http://localhost:11434/api/tags" -UseBasicParsing -TimeoutSec 3
+    $ollamaResp = Invoke-WebRequest -Uri "http://127.0.0.1:11434/api/tags" -UseBasicParsing -TimeoutSec 3
     $models = ($ollamaResp.Content | ConvertFrom-Json).models
     $hasVision = $models | Where-Object { $_.name -like "*llama3.2-vision*" -or $_.name -like "*minicpm*" }
     if ($hasVision) {
@@ -85,9 +85,18 @@ try {
 # ── 5. Backend starten ─────────────────────────────────────────────────────
 Write-Host "[4/4] Starte Anwendung..." -ForegroundColor Yellow
 
+# Alten Prozess auf Port 3001 beenden (falls noch einer läuft)
+try {
+    $oldConn = Get-NetTCPConnection -LocalPort 3001 -State Listen -ErrorAction SilentlyContinue
+    if ($oldConn) {
+        Stop-Process -Id $oldConn.OwningProcess -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 1
+    }
+} catch {}
+
 $env:DATABASE_PATH = "$DATA_DIR\database.sqlite"
 $env:UPLOADS_PATH  = $UPLOAD_DIR
-$env:OLLAMA_HOST   = "http://localhost:11434"
+$env:OLLAMA_HOST   = "http://127.0.0.1:11434"
 $env:PORT          = "3001"
 $env:NODE_ENV      = "production"
 
@@ -106,7 +115,7 @@ Start-Sleep -Seconds 4
 $ready = $false
 for ($i = 0; $i -lt 30; $i++) {
     try {
-        $r = Invoke-WebRequest -Uri "http://localhost:3001/api/health" -UseBasicParsing -TimeoutSec 1
+        $r = Invoke-WebRequest -Uri "http://127.0.0.1:3001/api/health" -UseBasicParsing -TimeoutSec 1
         if ($r.StatusCode -eq 200) { $ready = $true; break }
     } catch {}
     Start-Sleep -Seconds 1
@@ -138,7 +147,7 @@ Write-Host "=============================================" -ForegroundColor Cyan
 Write-Host ""
 
 # Browser öffnen
-Start-Process "http://localhost:3001"
+Start-Process "http://127.0.0.1:3001"
 
 Write-Host "Drücken Sie Enter um die Anwendung zu beenden..." -ForegroundColor Gray
 Read-Host

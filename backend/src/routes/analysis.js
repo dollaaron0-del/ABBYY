@@ -147,7 +147,7 @@ router.get('/ollama/health', async (req, res) => {
     const axios = require('axios');
     const db = require('../database/db');
     const row = db.prepare("SELECT value FROM settings WHERE key = 'ollama_host'").get();
-    const host = row ? row.value : 'http://localhost:11434';
+    const host = row ? row.value : 'http://127.0.0.1:11434';
 
     const response = await axios.get(`${host}/api/tags`, { timeout: 5000 });
     res.json({ status: 'ok', host, models_count: (response.data.models || []).length });
