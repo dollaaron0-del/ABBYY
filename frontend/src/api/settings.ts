@@ -20,6 +20,16 @@ export async function testAbbyyConnection(): Promise<{
   return res.data
 }
 
+export async function testAbbyyAutopilot(): Promise<{ success: boolean; message?: string; mode?: string }> {
+  const res = await apiClient.get('/abbyy/autopilot/test')
+  return res.data
+}
+
+export async function runAbbyyAutopilot(): Promise<{ message: string; summary: any }> {
+  const res = await apiClient.post('/abbyy/autopilot/run')
+  return res.data
+}
+
 export async function getOllamaModels(): Promise<OllamaModel[]> {
   const res = await apiClient.get<{ models: OllamaModel[] }>('/analysis/ollama/models')
   return res.data.models || []

@@ -20,6 +20,9 @@ router.get('/', (req, res) => {
     if (settings.claude_api_key && settings.claude_api_key.length > 4) {
       settings.claude_api_key_masked = '••••' + settings.claude_api_key.slice(-4);
     }
+    if (settings.abbyy_api_password) {
+      settings.abbyy_api_password_masked = '••••••';
+    }
     res.json(settings);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -55,6 +58,13 @@ router.put('/', (req, res) => {
       'abbyy_endpoint',
       'abbyy_auth_token',
       'abbyy_enabled',
+      'abbyy_api_url',
+      'abbyy_api_username',
+      'abbyy_api_password',
+      'abbyy_autopilot_enabled',
+      'abbyy_auto_complete_threshold',
+      'abbyy_poll_interval_sec',
+      'abbyy_simulation_mode',
       'claude_api_enabled',
       'claude_api_key',
       'auto_forward_green',

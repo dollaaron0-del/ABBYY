@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { getSettings, updateSettings, testAbbyyConnection, getOllamaModels, getOllamaHealth } from '../api/settings'
+import { getSettings, updateSettings, testAbbyyConnection, getOllamaModels, getOllamaHealth, testAbbyyAutopilot, runAbbyyAutopilot } from '../api/settings'
 import type { Settings as SettingsType, OllamaModel } from '../types'
 
 const S = {
@@ -66,6 +66,9 @@ export default function SettingsPage() {
   const [testingAbbyy, setTestingAbbyy] = useState(false)
   const [ollamaModels, setOllamaModels] = useState<OllamaModel[]>([])
   const [ollamaStatus, setOllamaStatus] = useState<{ ok: boolean; msg: string } | null>(null)
+  const [autopilotStatus, setAutopilotStatus] = useState<{ ok: boolean; msg: string } | null>(null)
+  const [testingAutopilot, setTestingAutopilot] = useState(false)
+  const [runningAutopilot, setRunningAutopilot] = useState(false)
 
   useEffect(() => {
     if (settings) {
@@ -114,6 +117,38 @@ export default function SettingsPage() {
     }
   }
 
+  async function testAutopilot() {
+    setTestingAutopilot(true)
+    setAutopilotStatus(null)
+    try {
+      // Erst speichern, damit der Test die aktuellen Zugangsdaten nutzt
+      await updateSettings(form)
+      const r = await testAbbyyAutopilot()
+      setAutopilotStatus({ ok: !!r.success, msg: r.message || (r.success ? 'Verbindung OK' : 'Fehlgeschlagen') })
+    } catch (err: any) {
+      setAutopilotStatus({ ok: false, msg: err.message })
+    } finally {
+      setTestingAutopilot(false)
+    }
+  }
+
+  async function runAutopilotNow() {
+    setRunningAutopilot(true)
+    setAutopilotStatus(null)
+    try {
+      await updateSettings(form)
+      const r = await runAbbyyAutopilot()
+      const s = r.summary || {}
+      if (s.disabled) setAutopilotStatus({ ok: false, msg: 'Autopilot ist nicht aktiviert' })
+      else if (s.notConfigured) setAutopilotStatus({ ok: false, msg: 'Keine ABBYY-Verbindung konfiguriert' })
+      else setAutopilotStatus({ ok: true, msg: `Geprüft: ${s.processed || 0} · Automatisch: ${s.autoCompleted || 0} · Manuell: ${s.manual || 0} · Fehler: ${s.errors || 0}` })
+    } catch (err: any) {
+      setAutopilotStatus({ ok: false, msg: err.message })
+    } finally {
+      setRunningAutopilot(false)
+    }
+  }
+
   async function refreshModels() {
     try {
       const models = await getOllamaModels()
@@ -130,6 +165,9 @@ export default function SettingsPage() {
   const claudeEnabled = form.claude_api_enabled === 'true'
   const abbyyEnabled = form.abbyy_enabled === 'true'
   const autoForward = form.auto_forward_green === 'true'
+  const autopilotEnabled = form.abbyy_autopilot_enabled === 'true'
+  const simulationMode = form.abbyy_simulation_mode === 'true'
+  const autoThreshold = parseInt(form.abbyy_auto_complete_threshold || '90', 10)
 
   return (
     <form onSubmit={handleSave}>
@@ -286,6 +324,100 @@ export default function SettingsPage() {
                 <span>
                   <span style={S.statusDot(abbyyStatus.ok)} />
                   <span style={{ fontSize: 13 }}>{abbyyStatus.msg}</span>
+                </span>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* ABBYY Autopilot */}
+      <div style={S.section}>
+        <div style={S.sectionTitle}>🤖 ABBYY Autopilot (automatischer Ablauf)</div>
+        <div style={S.sectionSub}>
+          Holt offene Aufgaben aus ABBYY FlexiCapture, lässt die KI die Felder prüfen &amp;
+          korrigieren und schließt die Aufgabe automatisch ab, wenn alles sicher ist.
+          Andernfalls landet sie in der manuellen Prüfung.
+        </div>
+
+        <div style={S.toggle}>
+          <Toggle value={autopilotEnabled} onChange={(v) => setField('abbyy_autopilot_enabled', v ? 'true' : 'false')} />
+          <span style={{ fontSize: 14, fontWeight: 500 }}>Autopilot aktivieren</span>
+        </div>
+
+        <div style={S.toggle}>
+          <Toggle value={simulationMode} onChange={(v) => setField('abbyy_simulation_mode', v ? 'true' : 'false')} />
+          <span style={{ fontSize: 14 }}>
+            Simulationsmodus <span style={{ color: '#6b7280', fontSize: 12 }}>(testet den Ablauf mit lokalen Dokumenten, ohne echte ABBYY-Verbindung)</span>
+          </span>
+        </div>
+
+        {autopilotEnabled && (
+          <>
+            <div style={S.grid}>
+              <div style={S.group}>
+                <label style={S.label}>ABBYY API URL</label>
+                <input
+                  style={S.input}
+                  value={form.abbyy_api_url || ''}
+                  onChange={(e) => setField('abbyy_api_url', e.target.value)}
+                  placeholder="http://abbyy-server/FlexiCapture12/Server"
+                />
+              </div>
+              <div style={S.group}>
+                <label style={S.label}>Abschluss-Schwelle: <strong>{autoThreshold}%</strong></label>
+                <input
+                  type="range" style={S.slider} min={50} max={100} step={5}
+                  value={autoThreshold}
+                  onChange={(e) => setField('abbyy_auto_complete_threshold', e.target.value)}
+                />
+                <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 4 }}>
+                  Nur ab {autoThreshold}% Konfidenz (+ alle Pflichtfelder) wird automatisch abgeschlossen.
+                </div>
+              </div>
+            </div>
+
+            <div style={S.grid}>
+              <div style={S.group}>
+                <label style={S.label}>ABBYY Benutzername</label>
+                <input
+                  style={S.input}
+                  value={form.abbyy_api_username || ''}
+                  onChange={(e) => setField('abbyy_api_username', e.target.value)}
+                  placeholder="z.B. Verifizierungs-Benutzer"
+                />
+              </div>
+              <div style={S.group}>
+                <label style={S.label}>ABBYY Passwort</label>
+                <input
+                  type="password" style={S.input}
+                  value={form.abbyy_api_password || ''}
+                  onChange={(e) => setField('abbyy_api_password', e.target.value)}
+                  placeholder="••••••"
+                />
+              </div>
+            </div>
+
+            <div style={S.group}>
+              <label style={S.label}>Prüf-Intervall (Sekunden)</label>
+              <input
+                type="number" style={{ ...S.input, maxWidth: 200 }} min={15} max={3600}
+                value={form.abbyy_poll_interval_sec || '60'}
+                onChange={(e) => setField('abbyy_poll_interval_sec', e.target.value)}
+              />
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 }}>
+              <button type="button" style={S.btn('secondary')} onClick={testAutopilot} disabled={testingAutopilot}>
+                {testingAutopilot ? 'Teste…' : '🔌 ABBYY-Verbindung testen'}
+              </button>
+              <button type="button" style={S.btn('secondary')} onClick={runAutopilotNow} disabled={runningAutopilot}>
+                {runningAutopilot ? 'Läuft…' : '▶ Jetzt einmal durchlaufen'}
+              </button>
+              {autopilotStatus && (
+                <span>
+                  <span style={S.statusDot(autopilotStatus.ok)} />
+                  <span style={{ fontSize: 13 }}>{autopilotStatus.msg}</span>
                 </span>
               )}
             </div>

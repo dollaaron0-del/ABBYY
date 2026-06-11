@@ -129,6 +129,14 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`ABBYY Rechnungsvorfilterung Backend running on port ${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`Uploads directory: ${UPLOADS_PATH}`);
+
+  // ABBYY-Autopilot starten (läuft nur, wenn in den Einstellungen aktiviert)
+  try {
+    const autopilot = require('./services/abbyyAutopilot');
+    autopilot.startScheduler();
+  } catch (err) {
+    console.error('[Autopilot] Konnte nicht gestartet werden:', err.message);
+  }
 });
 
 module.exports = app;

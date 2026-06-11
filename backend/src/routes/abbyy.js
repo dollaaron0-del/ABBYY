@@ -203,6 +203,47 @@ router.post('/forward-batch', async (req, res) => {
   }
 });
 
+// --- FlexiCapture Autopilot ---
+const connector = require('../services/abbyyConnector');
+const autopilot = require('../services/abbyyAutopilot');
+
+// GET /api/abbyy/autopilot/status - Konfiguration & Zustand
+router.get('/autopilot/status', (req, res) => {
+  try {
+    const cfg = connector.getConfig();
+    res.json({
+      configured: connector.isConfigured(),
+      enabled: cfg.autopilotEnabled,
+      simulation: cfg.simulation,
+      auto_complete_threshold: cfg.autoCompleteThreshold,
+      poll_interval_sec: cfg.pollIntervalSec,
+      has_api_url: !!cfg.apiUrl,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/abbyy/autopilot/test - Verbindung zu ABBYY prüfen
+router.get('/autopilot/test', async (req, res) => {
+  try {
+    const result = await connector.testConnection();
+    res.json(result);
+  } catch (err) {
+    res.status(200).json({ success: false, message: err.message });
+  }
+});
+
+// POST /api/abbyy/autopilot/run - einen Durchlauf manuell auslösen
+router.post('/autopilot/run', async (req, res) => {
+  try {
+    const summary = await autopilot.runCycle();
+    res.json({ message: 'Autopilot-Durchlauf abgeschlossen', summary });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 function getContentType(fileType) {
   const types = {
     pdf: 'application/pdf',
