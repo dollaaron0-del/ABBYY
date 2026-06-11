@@ -2,6 +2,15 @@
 
 require('dotenv').config();
 
+// Globale Schutzschilde: Ein einzelner Fehler (z.B. in OCR oder KI-Analyse)
+// darf niemals den gesamten Server beenden.
+process.on('uncaughtException', (err) => {
+  console.error('[UNCAUGHT EXCEPTION] Server läuft weiter:', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[UNHANDLED REJECTION] Server läuft weiter:', reason);
+});
+
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
