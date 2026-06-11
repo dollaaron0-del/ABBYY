@@ -46,11 +46,20 @@ const S = {
   },
   select: { width: '100%', padding: '9px 12px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 14, background: '#fff' },
   input: { width: '100%', padding: '9px 12px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 14 },
-  btn: (v: 'primary' | 'success' | 'warning' | 'danger' | 'secondary' = 'primary'): React.CSSProperties => ({
-    padding: '10px 18px', borderRadius: 8, fontSize: 14, cursor: 'pointer', fontWeight: 600, border: 'none',
-    background: v === 'primary' ? '#1a3a5c' : v === 'success' ? '#16a34a' : v === 'warning' ? '#ca8a04' : v === 'danger' ? '#ef4444' : '#f3f4f6',
-    color: v === 'secondary' ? '#374151' : '#fff',
-    transition: 'opacity 0.15s',
+  btn: (v: 'primary' | 'success' | 'warning' | 'danger' | 'secondary' = 'primary', disabled = false): React.CSSProperties => ({
+    padding: '10px 18px', borderRadius: 8, fontSize: 14,
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    fontWeight: 600, border: 'none',
+    background: disabled ? '#d1d5db'
+      : v === 'primary' ? '#1a3a5c'
+      : v === 'success' ? '#16a34a'
+      : v === 'warning' ? '#ca8a04'
+      : v === 'danger' ? '#ef4444'
+      : '#f3f4f6',
+    color: disabled ? '#9ca3af' : v === 'secondary' ? '#374151' : '#fff',
+    transition: 'all 0.15s',
+    opacity: disabled ? 0.7 : 1,
+    display: 'inline-flex', alignItems: 'center', gap: 6,
   }),
   actions: { display: 'flex', gap: 10, marginTop: 20, flexWrap: 'wrap' as const },
   logEntry: (s: string): React.CSSProperties => ({
@@ -64,10 +73,59 @@ const S = {
     borderBottom: '1px solid #f3f4f6',
     borderLeft: active ? '3px solid #2563eb' : '3px solid transparent',
     color: active ? '#1e40af' : '#374151',
+    transition: 'background 0.15s',
   }),
 } satisfies Record<string, React.CSSProperties | ((...args: any[]) => React.CSSProperties)>;
 
 const AMPEL_LABELS: Record<string, string> = { gruen: 'Grün – Auto', gelb: 'Gelb – Manuell', rot: 'Rot – Fehler' }
+
+function Spinner({ color = '#fff' }: { color?: string }) {
+  return (
+    <span style={{
+      display: 'inline-block', width: 13, height: 13,
+      border: `2px solid ${color}40`,
+      borderTopColor: color,
+      borderRadius: '50%',
+      animation: 'spin 0.7s linear infinite',
+      flexShrink: 0,
+    }} />
+  )
+}
+
+function Toast({ msg, ok, onDone }: { msg: string; ok: boolean; onDone: () => void }) {
+  useEffect(() => {
+    const t = setTimeout(onDone, 3500)
+    return () => clearTimeout(t)
+  }, [onDone])
+
+  return (
+    <div style={{
+      position: 'fixed', top: 24, right: 24, zIndex: 1000,
+      padding: '12px 24px', borderRadius: 10, fontWeight: 600, fontSize: 14,
+      background: ok ? '#16a34a' : '#dc2626', color: '#fff',
+      boxShadow: '0 4px 16px rgba(0,0,0,0.2)',
+      animation: 'slideIn 0.2s ease',
+    }}>
+      {ok ? '✓' : '✗'} {msg}
+    </div>
+  )
+}
+
+function Field({ label, value, highlight, wide }: { label: string; value: any; highlight?: boolean; wide?: boolean }) {
+  return (
+    <div style={{ gridColumn: wide ? 'span 2' : undefined }}>
+      <div style={{ color: '#9ca3af', fontSize: 10, fontWeight: 600, textTransform: 'uppercase', marginBottom: 1 }}>{label}</div>
+      <div style={{
+        fontWeight: highlight ? 700 : 500,
+        color: highlight ? '#15803d' : '#111827',
+        background: highlight ? '#dcfce7' : '#f9fafb',
+        padding: '2px 6px', borderRadius: 4, fontSize: 12,
+        fontFamily: highlight ? undefined : 'monospace',
+        letterSpacing: highlight ? undefined : 0.3,
+      }}>{value}</div>
+    </div>
+  )
+}
 
 function PreviewPane({ doc }: { doc: Document }) {
   const fileUrl = `/uploads/originals/${doc.filename}`
@@ -113,7 +171,9 @@ export default function ManualReview() {
   const [corrNote, setCorrNote] = useState('')
   const [saving, setSaving] = useState(false)
   const [forwarding, setForwarding] = useState(false)
+  const [retriggeringAnalysis, setRetriggeringAnalysis] = useState(false)
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null)
+  const [confirmed, setConfirmed] = useState(false)
 
   const { data: queue } = useQuery({
     queryKey: ['review-queue'],
@@ -125,29 +185,42 @@ export default function ManualReview() {
     queryKey: ['document', id],
     queryFn: () => getDocument(id!),
     enabled: !!id,
-    refetchInterval: id ? 10_000 : false,
+    // Poll faster while processing
+    refetchInterval: id ? 5_000 : false,
   })
+
+  const isDocProcessing = doc?.status === 'processing' || doc?.status === 'pending'
 
   useEffect(() => {
     if (doc) {
       setCorrDocType((doc.doc_type as DocType) || 'Sonstiges')
       setCorrSender(doc.sender || '')
+      setConfirmed(false)
     }
   }, [doc?.id])
 
+  // Reset retrigger state when doc finishes processing
+  useEffect(() => {
+    if (doc && doc.status !== 'processing' && doc.status !== 'pending') {
+      setRetriggeringAnalysis(false)
+    }
+  }, [doc?.status])
+
   function showToast(msg: string, ok = true) {
     setToast({ msg, ok })
-    setTimeout(() => setToast(null), 3000)
   }
 
   async function handleConfirm() {
     if (!doc) return
     setSaving(true)
+    setConfirmed(false)
     try {
       await updateDocument(doc.id, { status: 'processed', user_correction: 'Bestätigt' })
       qc.invalidateQueries({ queryKey: ['document', doc.id] })
       qc.invalidateQueries({ queryKey: ['review-queue'] })
-      showToast('Dokument bestätigt')
+      setConfirmed(true)
+      showToast('Dokument bestätigt ✓')
+      setTimeout(() => setConfirmed(false), 3000)
     } catch (err: any) {
       showToast(err.message, false)
     } finally {
@@ -194,12 +267,14 @@ export default function ManualReview() {
 
   async function handleRetrigger() {
     if (!doc) return
+    setRetriggeringAnalysis(true)
     try {
       await triggerAnalysis(doc.id)
       qc.invalidateQueries({ queryKey: ['document', doc.id] })
-      showToast('Analyse neu gestartet')
+      showToast('KI-Analyse neu gestartet – bitte warten…')
     } catch (err: any) {
       showToast(err.message, false)
+      setRetriggeringAnalysis(false)
     }
   }
 
@@ -207,16 +282,17 @@ export default function ManualReview() {
 
   return (
     <div>
-      {toast && (
-        <div style={{
-          position: 'fixed', top: 24, right: 24, zIndex: 1000,
-          padding: '12px 24px', borderRadius: 10, fontWeight: 600, fontSize: 14,
-          background: toast.ok ? '#16a34a' : '#dc2626', color: '#fff',
-          boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
-        }}>
-          {toast.ok ? '✓' : '✗'} {toast.msg}
-        </div>
-      )}
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes slideIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
+        @keyframes pulseGlow { 0%, 100% { box-shadow: 0 0 0 0 rgba(251,191,36,0.4); } 50% { box-shadow: 0 0 0 6px rgba(251,191,36,0); } }
+        .review-btn:hover:not(:disabled) { filter: brightness(0.88); transform: translateY(-1px); box-shadow: 0 3px 8px rgba(0,0,0,0.15); }
+        .review-btn:active:not(:disabled) { transform: translateY(0); box-shadow: none; }
+        .confirmed-flash { animation: confirmedFlash 0.4s ease; }
+        @keyframes confirmedFlash { 0% { background: #bbf7d0; } 100% { background: #fff; } }
+      `}</style>
+
+      {toast && <Toast msg={toast.msg} ok={toast.ok} onDone={() => setToast(null)} />}
 
       <div style={{ display: 'grid', gridTemplateColumns: '260px 1fr 420px', gap: 16 }}>
         {/* Left queue panel */}
@@ -231,7 +307,12 @@ export default function ManualReview() {
               </div>
             )}
             {queueDocs.map((d) => (
-              <div key={d.id} style={S.queueItem(d.id === id)} onClick={() => navigate(`/prüfung/${d.id}`)}>
+              <div
+                key={d.id}
+                className="review-btn"
+                style={{ ...S.queueItem(d.id === id), transition: 'background 0.15s' }}
+                onClick={() => navigate(`/prüfung/${d.id}`)}
+              >
                 <div style={{ fontWeight: 600, marginBottom: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {d.original_name}
                 </div>
@@ -249,7 +330,10 @@ export default function ManualReview() {
             </div>
           )}
           {id && isLoading && (
-            <div style={{ padding: 40, textAlign: 'center', color: '#9ca3af' }}>Lade Dokument…</div>
+            <div style={{ padding: 40, textAlign: 'center', color: '#9ca3af' }}>
+              <span style={{ display: 'inline-block', width: 20, height: 20, border: '2px solid #d1d5db', borderTopColor: '#6b7280', borderRadius: '50%', animation: 'spin 0.8s linear infinite', verticalAlign: 'middle', marginRight: 8 }} />
+              Lade Dokument…
+            </div>
           )}
           {id && doc && <PreviewPane doc={doc} />}
         </div>
@@ -268,14 +352,30 @@ export default function ManualReview() {
                 </span>
               </div>
 
-              <div style={S.panel}>
+              {/* Processing banner */}
+              {(isDocProcessing || retriggeringAnalysis) && (
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  background: '#fffbeb', borderBottom: '1px solid #fde68a',
+                  padding: '12px 20px', fontSize: 13, color: '#92400e',
+                  animation: 'pulseGlow 2s ease-in-out infinite',
+                }}>
+                  <Spinner color="#92400e" />
+                  <div>
+                    <strong>KI analysiert das Dokument…</strong>
+                    <div style={{ fontSize: 11, marginTop: 2, opacity: 0.7 }}>Das kann je nach Modell bis zu 2 Minuten dauern.</div>
+                  </div>
+                </div>
+              )}
+
+              <div style={{ ...S.panel, ...(confirmed ? { background: '#f0fdf4' } : {}) }}>
                 <div style={S.label}>Dokumenttyp</div>
                 <div style={S.value}>{doc.doc_type || '–'}</div>
 
                 <div style={S.label}>Absender</div>
                 <div style={S.value}>
                   {doc.sender || '–'}
-                  {doc.sender_matched ? <span style={{ marginLeft: 8, color: '#16a34a', fontSize: 12 }}>✓ {doc.supplier_name}</span> : null}
+                  {doc.sender_matched ? <span style={{ marginLeft: 8, color: '#16a34a', fontSize: 12 }}>✓ {(doc as any).supplier_name}</span> : null}
                 </div>
 
                 <div style={S.label}>Konfidenz</div>
@@ -291,19 +391,78 @@ export default function ManualReview() {
                   </>
                 )}
 
+                {/* Extracted invoice fields */}
+                {(doc as any).extracted_fields && (() => {
+                  let ef: Record<string, any> = {}
+                  try { ef = typeof (doc as any).extracted_fields === 'string' ? JSON.parse((doc as any).extracted_fields) : (doc as any).extracted_fields } catch (_) {}
+                  const hasAny = Object.values(ef).some((v) => v != null)
+                  if (!hasAny) return null
+                  const fmt = (v: any) => v == null ? '–' : String(v)
+                  const fmtAmount = (v: any) => v == null ? null : Number(v).toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                  return (
+                    <div style={{ marginTop: 16, border: '1px solid #e5e7eb', borderRadius: 8, overflow: 'hidden' }}>
+                      <div style={{ padding: '8px 14px', background: '#f1f5f9', fontWeight: 700, fontSize: 12, color: '#1a3a5c', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                        Extrahierte Rechnungsdaten
+                      </div>
+                      <div style={{ padding: '10px 14px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 12px', fontSize: 12 }}>
+                        {ef.rechnungsnummer && <Field label="Rechnungs-Nr." value={ef.rechnungsnummer} />}
+                        {ef.rechnungsdatum && <Field label="Rechnungsdatum" value={ef.rechnungsdatum} />}
+                        {ef.faelligkeitsdatum && <Field label="Fälligkeitsdatum" value={ef.faelligkeitsdatum} />}
+                        {ef.waehrung && <Field label="Währung" value={ef.waehrung} />}
+                        {ef.betrag_brutto != null && <Field label="Bruttobetrag" value={`${fmtAmount(ef.betrag_brutto)} ${ef.waehrung || ''}`} highlight />}
+                        {ef.betrag_netto != null && <Field label="Nettobetrag" value={`${fmtAmount(ef.betrag_netto)} ${ef.waehrung || ''}`} />}
+                        {ef.steuerbetrag != null && <Field label="Steuerbetrag" value={`${fmtAmount(ef.steuerbetrag)} ${ef.waehrung || ''}`} />}
+                        {ef.steuersatz != null && <Field label="Steuersatz" value={`${ef.steuersatz}%`} />}
+                      </div>
+                      {(ef.absender_strasse || ef.absender_plz || ef.iban) && (
+                        <div style={{ padding: '0 14px 10px', borderTop: '1px solid #f3f4f6', paddingTop: 8, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 12px', fontSize: 12 }}>
+                          {ef.absender_strasse && <Field label="Straße" value={ef.absender_strasse} />}
+                          {(ef.absender_plz || ef.absender_ort) && <Field label="PLZ / Ort" value={[ef.absender_plz, ef.absender_ort].filter(Boolean).join(' ')} />}
+                          {ef.absender_land && <Field label="Land" value={ef.absender_land} />}
+                          {ef.iban && <Field label="IBAN" value={ef.iban} wide />}
+                          {ef.bic && <Field label="BIC" value={ef.bic} />}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })()}
+
                 {!correctionMode && (
                   <div style={S.actions}>
-                    <button style={S.btn('success')} disabled={saving} onClick={handleConfirm}>
-                      ✓ Bestätigen
+                    <button
+                      className="review-btn"
+                      style={S.btn('success', saving || isDocProcessing)}
+                      disabled={saving || isDocProcessing}
+                      onClick={handleConfirm}
+                    >
+                      {saving ? <Spinner /> : '✓'}
+                      {saving ? 'Speichern…' : 'Bestätigen'}
                     </button>
-                    <button style={S.btn('warning')} onClick={() => setCorrectionMode(true)}>
+                    <button
+                      className="review-btn"
+                      style={S.btn('warning', isDocProcessing)}
+                      disabled={isDocProcessing}
+                      onClick={() => setCorrectionMode(true)}
+                    >
                       ✏ Korrigieren
                     </button>
-                    <button style={S.btn('primary')} disabled={forwarding} onClick={handleForward}>
-                      {forwarding ? '…' : '→ An ABBYY'}
+                    <button
+                      className="review-btn"
+                      style={S.btn('primary', forwarding || isDocProcessing)}
+                      disabled={forwarding || isDocProcessing}
+                      onClick={handleForward}
+                    >
+                      {forwarding ? <Spinner /> : '→'}
+                      {forwarding ? 'Wird gesendet…' : 'An ABBYY'}
                     </button>
-                    <button style={S.btn('secondary')} onClick={handleRetrigger}>
-                      ↺ Neu
+                    <button
+                      className="review-btn"
+                      style={S.btn('secondary', retriggeringAnalysis || isDocProcessing)}
+                      disabled={retriggeringAnalysis || isDocProcessing}
+                      onClick={handleRetrigger}
+                    >
+                      {retriggeringAnalysis ? <Spinner color="#374151" /> : '↺'}
+                      {retriggeringAnalysis ? 'Gestartet…' : 'Neu analysieren'}
                     </button>
                   </div>
                 )}
@@ -324,10 +483,20 @@ export default function ManualReview() {
                     <input style={S.input} value={corrNote} onChange={(e) => setCorrNote(e.target.value)} placeholder="Anmerkung zur Korrektur" />
 
                     <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
-                      <button style={S.btn('success')} disabled={saving} onClick={handleCorrect}>
-                        {saving ? '…' : '✓ Speichern'}
+                      <button
+                        className="review-btn"
+                        style={S.btn('success', saving)}
+                        disabled={saving}
+                        onClick={handleCorrect}
+                      >
+                        {saving ? <Spinner /> : '✓'}
+                        {saving ? 'Speichern…' : 'Speichern'}
                       </button>
-                      <button style={S.btn('secondary')} onClick={() => setCorrectionMode(false)}>
+                      <button
+                        className="review-btn"
+                        style={S.btn('secondary')}
+                        onClick={() => setCorrectionMode(false)}
+                      >
                         Abbrechen
                       </button>
                     </div>

@@ -84,6 +84,18 @@ router.post('/forward/:id', async (req, res) => {
     form.append('confidence', String(doc.confidence || 0));
     form.append('ampel', doc.ampel || 'rot');
 
+    // Forward all extracted invoice fields to ABBYY for pre-filling
+    if (doc.extracted_fields) {
+      try {
+        const ef = typeof doc.extracted_fields === 'string'
+          ? JSON.parse(doc.extracted_fields)
+          : doc.extracted_fields;
+        for (const [key, value] of Object.entries(ef)) {
+          if (value != null) form.append(key, String(value));
+        }
+      } catch (_) {}
+    }
+
     const uploadUrl = settings.abbyy_endpoint.replace(/\/$/, '') + '/documents/upload';
 
     const headers = {

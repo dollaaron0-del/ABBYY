@@ -97,6 +97,11 @@ function initializeSchema() {
 
   insertMany(defaultSettings);
 
+  // Add extracted_fields column if it doesn't exist yet (migration-safe)
+  try {
+    db.exec(`ALTER TABLE documents ADD COLUMN extracted_fields TEXT`);
+  } catch (_) { /* column already exists */ }
+
   console.log('Database schema initialized successfully.');
 }
 

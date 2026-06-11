@@ -231,6 +231,7 @@ async function processDocument(documentId) {
         ai_suggestion = ?,
         ai_reasoning = ?,
         ampel = ?,
+        extracted_fields = ?,
         processed_at = datetime('now')
       WHERE id = ?
     `).run(
@@ -247,6 +248,7 @@ async function processDocument(documentId) {
       }),
       aiResult.reasoning,
       finalAmpel,
+      aiResult.extracted_fields ? JSON.stringify(aiResult.extracted_fields) : null,
       documentId
     );
 

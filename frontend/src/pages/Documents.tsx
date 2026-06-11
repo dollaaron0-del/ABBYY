@@ -8,21 +8,23 @@ import {
   deleteDocument,
   triggerAnalysis,
 } from '../api/documents'
-import type { Document, Ampel } from '../types'
+import type { Document } from '../types'
 
 const S = {
   topBar: { display: 'flex', gap: 12, marginBottom: 20, flexWrap: 'wrap' as const, alignItems: 'center' },
   search: { flex: 1, minWidth: 220, padding: '9px 14px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 14, outline: 'none' },
   select: { padding: '9px 14px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 14, background: '#fff', cursor: 'pointer' },
-  btn: (variant: 'primary' | 'secondary' | 'danger' = 'primary'): React.CSSProperties => ({
+  btn: (variant: 'primary' | 'secondary' | 'danger' = 'primary', disabled = false): React.CSSProperties => ({
     padding: '9px 18px',
     borderRadius: 8,
     fontSize: 14,
-    cursor: 'pointer',
+    cursor: disabled ? 'not-allowed' : 'pointer',
     fontWeight: 500,
     border: 'none',
-    background: variant === 'primary' ? '#1a3a5c' : variant === 'danger' ? '#ef4444' : '#f3f4f6',
-    color: variant === 'primary' ? '#fff' : variant === 'danger' ? '#fff' : '#374151',
+    background: disabled ? '#d1d5db' : variant === 'primary' ? '#1a3a5c' : variant === 'danger' ? '#ef4444' : '#f3f4f6',
+    color: disabled ? '#9ca3af' : variant === 'primary' ? '#fff' : variant === 'danger' ? '#fff' : '#374151',
+    transition: 'background 0.15s, transform 0.1s',
+    opacity: disabled ? 0.7 : 1,
   }),
   dropzone: (isDragActive: boolean): React.CSSProperties => ({
     border: `2px dashed ${isDragActive ? '#2563eb' : '#d1d5db'}`,
@@ -73,6 +75,39 @@ const STATUS_LABELS: Record<string, string> = {
   error: 'Fehler', forwarded: 'Weitergeleitet',
 }
 
+function Spinner() {
+  return (
+    <span style={{
+      display: 'inline-block', width: 12, height: 12,
+      border: '2px solid rgba(255,255,255,0.4)',
+      borderTopColor: '#fff',
+      borderRadius: '50%',
+      animation: 'spin 0.7s linear infinite',
+      marginRight: 5,
+      verticalAlign: 'middle',
+    }} />
+  )
+}
+
+function Toast({ msg, ok, onDone }: { msg: string; ok: boolean; onDone: () => void }) {
+  React.useEffect(() => {
+    const t = setTimeout(onDone, 3000)
+    return () => clearTimeout(t)
+  }, [onDone])
+
+  return (
+    <div style={{
+      position: 'fixed', top: 24, right: 24, zIndex: 1000,
+      padding: '12px 24px', borderRadius: 10, fontWeight: 600, fontSize: 14,
+      background: ok ? '#16a34a' : '#dc2626', color: '#fff',
+      boxShadow: '0 4px 16px rgba(0,0,0,0.2)',
+      animation: 'slideIn 0.2s ease',
+    }}>
+      {ok ? '✓' : '✗'} {msg}
+    </div>
+  )
+}
+
 export default function Documents() {
   const navigate = useNavigate()
   const qc = useQueryClient()
@@ -86,12 +121,30 @@ export default function Documents() {
   const [uploadMessage, setUploadMessage] = useState<string | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [retriggering, setRetriggering] = useState<Set<string>>(new Set())
+  const [deleting, setDeleting] = useState<Set<string>>(new Set())
+  const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null)
 
-  const { data, isLoading, refetch } = useQuery({
+  const { data, isLoading } = useQuery({
     queryKey: ['documents', page, statusFilter, ampelFilter, search],
     queryFn: () => getDocuments({ page, limit: 20, status: statusFilter, ampel: ampelFilter, search }),
-    refetchInterval: 10_000,
+    refetchInterval: 5_000,
   })
+
+  const docs = data?.data || []
+  const hasProcessing = docs.some((d) => d.status === 'processing' || d.status === 'pending')
+
+  // Poll faster when documents are actively processing
+  useQuery({
+    queryKey: ['documents-processing-poll'],
+    queryFn: () => getDocuments({ page, limit: 20, status: statusFilter, ampel: ampelFilter, search }),
+    refetchInterval: hasProcessing ? 2_000 : false,
+    enabled: hasProcessing,
+  })
+
+  function showToast(msg: string, ok = true) {
+    setToast({ msg, ok })
+  }
 
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
     if (acceptedFiles.length === 0) return
@@ -103,7 +156,7 @@ export default function Documents() {
       const result = await uploadDocumentsBatch(acceptedFiles, setUploadProgress)
       const ok = result.results.filter((r) => r.status === 'queued').length
       const fail = result.results.filter((r) => r.status === 'error').length
-      setUploadMessage(`${ok} Dokument(e) hochgeladen${fail > 0 ? `, ${fail} fehlgeschlagen` : ''}.`)
+      setUploadMessage(`${ok} Dokument(e) hochgeladen und werden analysiert…${fail > 0 ? ` ${fail} fehlgeschlagen.` : ''}`)
       qc.invalidateQueries({ queryKey: ['documents'] })
       qc.invalidateQueries({ queryKey: ['stats'] })
     } catch (err: any) {
@@ -127,13 +180,29 @@ export default function Documents() {
 
   const handleDelete = async (id: string, name: string) => {
     if (!confirm(`Dokument "${name}" wirklich löschen?`)) return
-    await deleteDocument(id)
-    qc.invalidateQueries({ queryKey: ['documents'] })
+    setDeleting((prev) => new Set(prev).add(id))
+    try {
+      await deleteDocument(id)
+      qc.invalidateQueries({ queryKey: ['documents'] })
+      showToast('Dokument gelöscht')
+    } catch (err: any) {
+      showToast(err.message, false)
+    } finally {
+      setDeleting((prev) => { const n = new Set(prev); n.delete(id); return n })
+    }
   }
 
   const handleRetrigger = async (id: string) => {
-    await triggerAnalysis(id)
-    qc.invalidateQueries({ queryKey: ['documents'] })
+    setRetriggering((prev) => new Set(prev).add(id))
+    try {
+      await triggerAnalysis(id)
+      qc.invalidateQueries({ queryKey: ['documents'] })
+      showToast('Analyse neu gestartet – bitte warten…')
+    } catch (err: any) {
+      showToast(err.message, false)
+    } finally {
+      setRetriggering((prev) => { const n = new Set(prev); n.delete(id); return n })
+    }
   }
 
   const toggleSelect = (id: string) => {
@@ -144,16 +213,30 @@ export default function Documents() {
     })
   }
 
-  const docs = data?.data || []
   const pagination = data?.pagination
 
   return (
     <div>
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes slideIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        .doc-row-processing { animation: pulse 2s ease-in-out infinite; background: #fffbeb !important; }
+        .action-btn:hover:not(:disabled) { filter: brightness(0.9); transform: scale(1.05); }
+        .action-btn:active:not(:disabled) { transform: scale(0.96); }
+      `}</style>
+
+      {toast && <Toast msg={toast.msg} ok={toast.ok} onDone={() => setToast(null)} />}
+
       <div {...getRootProps()} style={S.dropzone(isDragActive)}>
         <input {...getInputProps()} />
-        <div style={{ fontSize: 36, marginBottom: 8 }}>📄</div>
+        <div style={{ fontSize: 36, marginBottom: 8 }}>{uploadProgress !== null ? '⏳' : '📄'}</div>
         <div style={S.dropText}>
-          {isDragActive ? 'Dateien hier ablegen…' : 'Dateien hierher ziehen oder klicken um hochzuladen'}
+          {uploadProgress !== null
+            ? `Hochladen… ${uploadProgress}%`
+            : isDragActive
+            ? 'Dateien hier ablegen…'
+            : 'Dateien hierher ziehen oder klicken um hochzuladen'}
         </div>
         <div style={S.dropHint}>PDF, JPG, PNG, TIFF, BMP · Mehrfachauswahl möglich · Max. 50 MB je Datei</div>
         {uploadProgress !== null && (
@@ -161,9 +244,24 @@ export default function Documents() {
             <div style={S.progressBar(uploadProgress)} />
           </div>
         )}
-        {uploadMessage && <div style={{ marginTop: 10, color: '#16a34a', fontSize: 13 }}>✓ {uploadMessage}</div>}
+        {uploadMessage && <div style={{ marginTop: 10, color: '#16a34a', fontSize: 13, fontWeight: 600 }}>✓ {uploadMessage}</div>}
         {uploadError && <div style={{ marginTop: 10, color: '#dc2626', fontSize: 13 }}>✗ {uploadError}</div>}
       </div>
+
+      {hasProcessing && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10,
+          background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8,
+          padding: '10px 16px', marginBottom: 16, fontSize: 13, color: '#92400e',
+        }}>
+          <span style={{
+            display: 'inline-block', width: 14, height: 14,
+            border: '2px solid #f59e0b', borderTopColor: '#92400e',
+            borderRadius: '50%', animation: 'spin 0.8s linear infinite', flexShrink: 0,
+          }} />
+          <strong>KI-Analyse läuft</strong> – Dokumente werden gerade verarbeitet. Die Seite aktualisiert sich automatisch.
+        </div>
+      )}
 
       <div style={S.topBar}>
         <input
@@ -217,66 +315,99 @@ export default function Documents() {
         </thead>
         <tbody>
           {isLoading && (
-            <tr><td colSpan={9} style={{ ...S.td, textAlign: 'center', color: '#9ca3af', padding: 32 }}>Lade Dokumente…</td></tr>
+            <tr><td colSpan={9} style={{ ...S.td, textAlign: 'center', color: '#9ca3af', padding: 32 }}>
+              <span style={{ display: 'inline-block', width: 18, height: 18, border: '2px solid #d1d5db', borderTopColor: '#6b7280', borderRadius: '50%', animation: 'spin 0.8s linear infinite', verticalAlign: 'middle', marginRight: 8 }} />
+              Lade Dokumente…
+            </td></tr>
           )}
           {!isLoading && docs.length === 0 && (
             <tr><td colSpan={9} style={{ ...S.td, textAlign: 'center', color: '#9ca3af', padding: 32 }}>Keine Dokumente gefunden</td></tr>
           )}
-          {docs.map((doc) => (
-            <tr key={doc.id}
-              style={{ cursor: 'pointer' }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = '#f9fafb')}
-              onMouseLeave={(e) => (e.currentTarget.style.background = '')}
-            >
-              <td style={S.td} onClick={(e) => e.stopPropagation()}>
-                <input type="checkbox" checked={selectedIds.has(doc.id)} onChange={() => toggleSelect(doc.id)} />
-              </td>
-              <td style={S.td} onClick={() => navigate(`/prüfung/${doc.id}`)}>
-                <span title={doc.original_name} style={{ maxWidth: 220, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {doc.original_name}
-                </span>
-              </td>
-              <td style={S.td} onClick={() => navigate(`/prüfung/${doc.id}`)}>{doc.doc_type || '–'}</td>
-              <td style={S.td} onClick={() => navigate(`/prüfung/${doc.id}`)}>
-                {doc.sender || '–'}
-                {doc.sender_matched ? <span style={{ marginLeft: 4, color: '#16a34a', fontSize: 11 }}>✓</span> : null}
-              </td>
-              <td style={S.td} onClick={() => navigate(`/prüfung/${doc.id}`)}>
-                <span style={S.ampelDot(doc.ampel)} />
-                {AMPEL_LABELS[doc.ampel] || doc.ampel}
-              </td>
-              <td style={S.td} onClick={() => navigate(`/prüfung/${doc.id}`)}>
-                {doc.confidence > 0 ? `${doc.confidence}%` : '–'}
-              </td>
-              <td style={S.td} onClick={() => navigate(`/prüfung/${doc.id}`)}>
-                <span style={S.statusBadge(doc.status)}>
-                  {STATUS_LABELS[doc.status] || doc.status}
-                </span>
-              </td>
-              <td style={S.td} onClick={() => navigate(`/prüfung/${doc.id}`)}>
-                {new Date(doc.created_at).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' })}
-              </td>
-              <td style={S.td} onClick={(e) => e.stopPropagation()}>
-                <div style={{ display: 'flex', gap: 6 }}>
-                  <button
-                    title="Prüfen"
-                    style={{ ...S.btn('secondary'), padding: '4px 10px', fontSize: 12 }}
-                    onClick={() => navigate(`/prüfung/${doc.id}`)}
-                  >🔍</button>
-                  <button
-                    title="Neu analysieren"
-                    style={{ ...S.btn('secondary'), padding: '4px 10px', fontSize: 12 }}
-                    onClick={() => handleRetrigger(doc.id)}
-                  >↺</button>
-                  <button
-                    title="Löschen"
-                    style={{ ...S.btn('danger'), padding: '4px 10px', fontSize: 12 }}
-                    onClick={() => handleDelete(doc.id, doc.original_name)}
-                  >✕</button>
-                </div>
-              </td>
-            </tr>
-          ))}
+          {docs.map((doc) => {
+            const isProcessing = doc.status === 'processing' || doc.status === 'pending'
+            const isRetriggering = retriggering.has(doc.id)
+            const isDeleting = deleting.has(doc.id)
+            return (
+              <tr
+                key={doc.id}
+                className={isProcessing ? 'doc-row-processing' : ''}
+                style={{ cursor: 'pointer', transition: 'background 0.15s' }}
+                onMouseEnter={(e) => { if (!isProcessing) e.currentTarget.style.background = '#f9fafb' }}
+                onMouseLeave={(e) => { if (!isProcessing) e.currentTarget.style.background = '' }}
+              >
+                <td style={S.td} onClick={(e) => e.stopPropagation()}>
+                  <input type="checkbox" checked={selectedIds.has(doc.id)} onChange={() => toggleSelect(doc.id)} />
+                </td>
+                <td style={S.td} onClick={() => navigate(`/prüfung/${doc.id}`)}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    {isProcessing && (
+                      <span style={{
+                        display: 'inline-block', width: 10, height: 10, flexShrink: 0,
+                        border: '2px solid #f59e0b', borderTopColor: '#92400e',
+                        borderRadius: '50%', animation: 'spin 0.8s linear infinite',
+                      }} title="Wird analysiert…" />
+                    )}
+                    <span title={doc.original_name} style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {doc.original_name}
+                    </span>
+                  </div>
+                </td>
+                <td style={S.td} onClick={() => navigate(`/prüfung/${doc.id}`)}>{doc.doc_type || '–'}</td>
+                <td style={S.td} onClick={() => navigate(`/prüfung/${doc.id}`)}>
+                  {doc.sender || '–'}
+                  {doc.sender_matched ? <span style={{ marginLeft: 4, color: '#16a34a', fontSize: 11 }}>✓</span> : null}
+                </td>
+                <td style={S.td} onClick={() => navigate(`/prüfung/${doc.id}`)}>
+                  <span style={S.ampelDot(doc.ampel)} />
+                  {AMPEL_LABELS[doc.ampel] || doc.ampel}
+                </td>
+                <td style={S.td} onClick={() => navigate(`/prüfung/${doc.id}`)}>
+                  {doc.confidence > 0 ? `${doc.confidence}%` : '–'}
+                </td>
+                <td style={S.td} onClick={() => navigate(`/prüfung/${doc.id}`)}>
+                  <span style={S.statusBadge(doc.status)}>
+                    {isProcessing && <span style={{ display: 'inline-block', width: 7, height: 7, border: '1.5px solid #92400e', borderTopColor: '#fbbf24', borderRadius: '50%', animation: 'spin 0.8s linear infinite', marginRight: 4, verticalAlign: 'middle' }} />}
+                    {STATUS_LABELS[doc.status] || doc.status}
+                  </span>
+                </td>
+                <td style={S.td} onClick={() => navigate(`/prüfung/${doc.id}`)}>
+                  {new Date(doc.created_at).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' })}
+                </td>
+                <td style={S.td} onClick={(e) => e.stopPropagation()}>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button
+                      className="action-btn"
+                      title="Prüfen"
+                      style={{ ...S.btn('secondary'), padding: '4px 10px', fontSize: 12, transition: 'all 0.1s' }}
+                      onClick={() => navigate(`/prüfung/${doc.id}`)}
+                    >🔍</button>
+                    <button
+                      className="action-btn"
+                      title={isRetriggering ? 'Analyse läuft…' : 'Neu analysieren'}
+                      disabled={isRetriggering || isProcessing}
+                      style={{ ...S.btn('secondary', isRetriggering || isProcessing), padding: '4px 10px', fontSize: 12, transition: 'all 0.1s', minWidth: 32 }}
+                      onClick={() => handleRetrigger(doc.id)}
+                    >
+                      {isRetriggering
+                        ? <span style={{ display: 'inline-block', width: 10, height: 10, border: '2px solid #d1d5db', borderTopColor: '#374151', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
+                        : '↺'}
+                    </button>
+                    <button
+                      className="action-btn"
+                      title={isDeleting ? 'Wird gelöscht…' : 'Löschen'}
+                      disabled={isDeleting}
+                      style={{ ...S.btn('danger', isDeleting), padding: '4px 10px', fontSize: 12, transition: 'all 0.1s' }}
+                      onClick={() => handleDelete(doc.id, doc.original_name)}
+                    >
+                      {isDeleting
+                        ? <span style={{ display: 'inline-block', width: 10, height: 10, border: '2px solid rgba(255,255,255,0.4)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
+                        : '✕'}
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            )
+          })}
         </tbody>
       </table>
 

@@ -40,10 +40,24 @@ Gib als "absender" niemals den Empfänger/das Hotel zurück, sondern immer den L
 Dokumenttext:
 ${truncated}
 
-Antworte mit folgendem JSON-Format:
+Antworte mit folgendem JSON-Format (alle Felder außer dokumenttyp, absender, konfidenz, begruendung, ampel sind optional – setze null wenn nicht gefunden):
 {
   "dokumenttyp": "Rechnung" | "Mahnung" | "Behördenbescheid" | "Unleserlich" | "Sonstiges",
   "absender": "Name des rechnungsstellenden Unternehmens (Lieferant) oder null",
+  "absender_strasse": "Straße und Hausnummer des Absenders oder null",
+  "absender_plz": "PLZ des Absenders oder null",
+  "absender_ort": "Ort des Absenders oder null",
+  "absender_land": "Länderkürzel z.B. DE, AT, CH oder null",
+  "rechnungsnummer": "Rechnungsnummer oder null",
+  "rechnungsdatum": "Datum im Format DD.MM.YYYY oder null",
+  "faelligkeitsdatum": "Fälligkeitsdatum im Format DD.MM.YYYY oder null",
+  "betrag_brutto": "Bruttobetrag als Zahl z.B. 1234.56 oder null",
+  "betrag_netto": "Nettobetrag als Zahl oder null",
+  "steuerbetrag": "Steuerbetrag als Zahl oder null",
+  "steuersatz": "Steuersatz z.B. 19 für 19% oder null",
+  "waehrung": "Währungskürzel z.B. EUR, CHF oder null",
+  "iban": "IBAN des Absenders oder null",
+  "bic": "BIC/SWIFT des Absenders oder null",
   "konfidenz": 0-100,
   "begruendung": "Kurze Begründung der Klassifizierung",
   "ampel": "gruen" | "gelb" | "rot"
@@ -99,12 +113,31 @@ function parseAiResponse(responseText) {
   const validDocTypes = ['Rechnung', 'Mahnung', 'Behördenbescheid', 'Unleserlich', 'Sonstiges'];
   const validAmpel = ['gruen', 'gelb', 'rot'];
 
+  // Extended invoice fields
+  const extractedFields = {
+    absender_strasse: parsed.absender_strasse || null,
+    absender_plz: parsed.absender_plz || null,
+    absender_ort: parsed.absender_ort || null,
+    absender_land: parsed.absender_land || null,
+    rechnungsnummer: parsed.rechnungsnummer || null,
+    rechnungsdatum: parsed.rechnungsdatum || null,
+    faelligkeitsdatum: parsed.faelligkeitsdatum || null,
+    betrag_brutto: parsed.betrag_brutto != null ? parseFloat(parsed.betrag_brutto) || null : null,
+    betrag_netto: parsed.betrag_netto != null ? parseFloat(parsed.betrag_netto) || null : null,
+    steuerbetrag: parsed.steuerbetrag != null ? parseFloat(parsed.steuerbetrag) || null : null,
+    steuersatz: parsed.steuersatz != null ? parseFloat(parsed.steuersatz) || null : null,
+    waehrung: parsed.waehrung || null,
+    iban: parsed.iban || null,
+    bic: parsed.bic || null,
+  };
+
   return {
     doc_type: validDocTypes.includes(docType) ? docType : 'Sonstiges',
     sender: sender || null,
     confidence,
     reasoning,
     ampel: validAmpel.includes(ampel) ? ampel : 'rot',
+    extracted_fields: extractedFields,
   };
 }
 
