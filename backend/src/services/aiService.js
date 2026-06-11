@@ -37,6 +37,11 @@ Der EMPFÄNGER ist NICHT der Absender. Empfänger sind unsere eigenen Hotels, z.
 "AMERON", "Althoff", oder eine Adresse die nach "An:" bzw. als Anschrift steht.
 Gib als "absender" niemals den Empfänger/das Hotel zurück, sondern immer den Lieferanten.
 
+WICHTIG: "absender" ist IMMER ein Firmenname, z.B. "Nexi Germany GmbH" oder "FoodConnection GmbH".
+NIEMALS eine Nummer, eine Bezeichnung wie "Lieferscheinnummer", "Bestellnummer",
+"Rechnungsnummer", "Kundennummer", "Weferscheinnummer" oder ähnliches als Absender angeben.
+Wenn kein eindeutiger Firmenname erkennbar ist, setze absender auf null.
+
 Dokumenttext:
 ${truncated}
 
