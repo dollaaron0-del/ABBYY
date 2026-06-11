@@ -100,11 +100,11 @@ $backendJob = Start-Process -FilePath $NODE_EXE `
     -RedirectStandardError $LOG_FILE `
     -PassThru -WindowStyle Minimized
 
-Start-Sleep -Seconds 2
+Start-Sleep -Seconds 4
 
-# Warten bis Backend bereit ist
+# Warten bis Backend bereit ist (30 Sekunden)
 $ready = $false
-for ($i = 0; $i -lt 15; $i++) {
+for ($i = 0; $i -lt 30; $i++) {
     try {
         $r = Invoke-WebRequest -Uri "http://localhost:3001/api/health" -UseBasicParsing -TimeoutSec 1
         if ($r.StatusCode -eq 200) { $ready = $true; break }
