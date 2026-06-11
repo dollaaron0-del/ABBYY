@@ -91,9 +91,13 @@ $env:OLLAMA_HOST   = "http://localhost:11434"
 $env:PORT          = "3001"
 $env:NODE_ENV      = "production"
 
+$LOG_FILE = "$SCRIPT_DIR\backend-fehler.log"
+if (Test-Path $LOG_FILE) { Remove-Item $LOG_FILE }
+
 $backendJob = Start-Process -FilePath $NODE_EXE `
     -ArgumentList "$SCRIPT_DIR\backend\src\index.js" `
     -WorkingDirectory "$SCRIPT_DIR\backend" `
+    -RedirectStandardError $LOG_FILE `
     -PassThru -WindowStyle Minimized
 
 Start-Sleep -Seconds 2
@@ -111,6 +115,15 @@ for ($i = 0; $i -lt 15; $i++) {
 if (-not $ready) {
     Write-Host ""
     Write-Host "FEHLER: Backend konnte nicht gestartet werden." -ForegroundColor Red
+    Write-Host ""
+    if (Test-Path $LOG_FILE) {
+        $log = Get-Content $LOG_FILE -Raw
+        if ($log) {
+            Write-Host "--- Fehlermeldung ---" -ForegroundColor Red
+            Write-Host $log -ForegroundColor Red
+            Write-Host "---------------------" -ForegroundColor Red
+        }
+    }
     Read-Host "Drücken Sie Enter zum Beenden"
     $backendJob | Stop-Process -ErrorAction SilentlyContinue
     exit 1
