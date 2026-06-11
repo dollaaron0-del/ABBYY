@@ -114,6 +114,7 @@ async function analyzeWithOllama(text) {
         model: settings.ollamaModel,
         prompt,
         stream: false,
+        keep_alive: '30m',
         options: {
           temperature: 0.1,
           num_predict: 512,
@@ -121,7 +122,8 @@ async function analyzeWithOllama(text) {
         },
       },
       {
-        timeout: 120000,
+        // Erstes Laden eines großen Modells auf der CPU kann mehrere Minuten dauern
+        timeout: 600000,
         headers: { 'Content-Type': 'application/json' },
       }
     );

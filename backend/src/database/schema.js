@@ -72,7 +72,7 @@ function initializeSchema() {
 
   const defaultSettings = [
     { key: 'ollama_host', value: 'http://127.0.0.1:11434' },
-    { key: 'ollama_model', value: 'llama3.2-vision' },
+    { key: 'ollama_model', value: 'llama3.2' },
     { key: 'confidence_threshold', value: '75' },
     { key: 'abbyy_endpoint', value: '' },
     { key: 'abbyy_auth_token', value: '' },
