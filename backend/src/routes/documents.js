@@ -253,7 +253,7 @@ router.post('/upload-batch', upload.array('files', 50), async (req, res) => {
 // PATCH /api/documents/:id - update document (user correction)
 router.patch('/:id', (req, res) => {
   try {
-    const { user_correction, doc_type, sender, ampel, status } = req.body;
+    const { user_correction, doc_type, sender, ampel, status, extracted_fields } = req.body;
     const doc = db.prepare('SELECT * FROM documents WHERE id = ?').get(req.params.id);
 
     if (!doc) {
@@ -282,6 +282,14 @@ router.patch('/:id', (req, res) => {
     if (status !== undefined) {
       updates.push('status = ?');
       params.push(status);
+    }
+    if (extracted_fields !== undefined) {
+      updates.push('extracted_fields = ?');
+      params.push(
+        typeof extracted_fields === 'string'
+          ? extracted_fields
+          : JSON.stringify(extracted_fields)
+      );
     }
 
     if (updates.length === 0) {

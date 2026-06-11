@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useParams, useNavigate } from 'react-router-dom'
 import { getDocuments, getDocument, updateDocument, triggerAnalysis, forwardToAbbyy } from '../api/documents'
 import type { Document, DocType, Ampel } from '../types'
+import AbbyyOverlay, { type AbbyyFields } from '../components/AbbyyOverlay'
 
 const DOC_TYPES: DocType[] = ['Rechnung', 'Mahnung', 'Behördenbescheid', 'Unleserlich', 'Sonstiges']
 const AMPEL_MAP: Record<DocType, Ampel> = {
@@ -111,6 +112,38 @@ function Toast({ msg, ok, onDone }: { msg: string; ok: boolean; onDone: () => vo
   )
 }
 
+/** Liest die extrahierten Felder aus dem Dokument und ergänzt den Lieferantennamen. */
+function buildAbbyyFields(doc: Document): AbbyyFields {
+  let ef: Record<string, any> = {}
+  const raw = (doc as any).extracted_fields
+  if (raw) {
+    try { ef = typeof raw === 'string' ? JSON.parse(raw) : raw } catch (_) {}
+  }
+  return {
+    absender: doc.sender || ef.absender || null,
+    absender_strasse: ef.absender_strasse ?? null,
+    absender_plz: ef.absender_plz ?? null,
+    absender_ort: ef.absender_ort ?? null,
+    absender_land: ef.absender_land ?? null,
+    iban: ef.iban ?? null,
+    bankkonto: ef.bankkonto ?? null,
+    bic: ef.bic ?? null,
+    rechnungsnummer: ef.rechnungsnummer ?? null,
+    rechnungsdatum: ef.rechnungsdatum ?? null,
+    faelligkeitsdatum: ef.faelligkeitsdatum ?? null,
+    einkaeufer: ef.einkaeufer ?? null,
+    reversed_charge: ef.reversed_charge ?? false,
+    betrag_brutto: ef.betrag_brutto ?? null,
+    waehrung: ef.waehrung ?? null,
+    betrag_netto: ef.betrag_netto ?? null,
+    steuerbetrag: ef.steuerbetrag ?? null,
+    steuersatz: ef.steuersatz ?? null,
+    nettogesamtbetrag: ef.nettogesamtbetrag ?? null,
+    steuergesamtbetrag: ef.steuergesamtbetrag ?? null,
+    referenz: ef.referenz ?? null,
+  }
+}
+
 function Field({ label, value, highlight, wide }: { label: string; value: any; highlight?: boolean; wide?: boolean }) {
   return (
     <div style={{ gridColumn: wide ? 'span 2' : undefined }}>
@@ -170,6 +203,7 @@ export default function ManualReview() {
   const [corrSender, setCorrSender] = useState('')
   const [corrNote, setCorrNote] = useState('')
   const [saving, setSaving] = useState(false)
+  const [savingFields, setSavingFields] = useState(false)
   const [forwarding, setForwarding] = useState(false)
   const [retriggeringAnalysis, setRetriggeringAnalysis] = useState(false)
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null)
@@ -248,6 +282,26 @@ export default function ManualReview() {
       showToast(err.message, false)
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function handleSaveFields(fields: AbbyyFields) {
+    if (!doc) return
+    setSavingFields(true)
+    try {
+      // Lieferantenname separat ins sender-Feld, Rest in extracted_fields
+      const { absender, ...rest } = fields
+      await updateDocument(doc.id, {
+        sender: absender || doc.sender || undefined,
+        extracted_fields: rest,
+        user_correction: 'Rechnungsfelder geprüft',
+      })
+      qc.invalidateQueries({ queryKey: ['document', doc.id] })
+      showToast('Rechnungsfelder gespeichert')
+    } catch (err: any) {
+      showToast(err.message, false)
+    } finally {
+      setSavingFields(false)
     }
   }
 
@@ -391,41 +445,16 @@ export default function ManualReview() {
                   </>
                 )}
 
-                {/* Extracted invoice fields */}
-                {(doc as any).extracted_fields && (() => {
-                  let ef: Record<string, any> = {}
-                  try { ef = typeof (doc as any).extracted_fields === 'string' ? JSON.parse((doc as any).extracted_fields) : (doc as any).extracted_fields } catch (_) {}
-                  const hasAny = Object.values(ef).some((v) => v != null)
-                  if (!hasAny) return null
-                  const fmt = (v: any) => v == null ? '–' : String(v)
-                  const fmtAmount = (v: any) => v == null ? null : Number(v).toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-                  return (
-                    <div style={{ marginTop: 16, border: '1px solid #e5e7eb', borderRadius: 8, overflow: 'hidden' }}>
-                      <div style={{ padding: '8px 14px', background: '#f1f5f9', fontWeight: 700, fontSize: 12, color: '#1a3a5c', textTransform: 'uppercase', letterSpacing: 0.5 }}>
-                        Extrahierte Rechnungsdaten
-                      </div>
-                      <div style={{ padding: '10px 14px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 12px', fontSize: 12 }}>
-                        {ef.rechnungsnummer && <Field label="Rechnungs-Nr." value={ef.rechnungsnummer} />}
-                        {ef.rechnungsdatum && <Field label="Rechnungsdatum" value={ef.rechnungsdatum} />}
-                        {ef.faelligkeitsdatum && <Field label="Fälligkeitsdatum" value={ef.faelligkeitsdatum} />}
-                        {ef.waehrung && <Field label="Währung" value={ef.waehrung} />}
-                        {ef.betrag_brutto != null && <Field label="Bruttobetrag" value={`${fmtAmount(ef.betrag_brutto)} ${ef.waehrung || ''}`} highlight />}
-                        {ef.betrag_netto != null && <Field label="Nettobetrag" value={`${fmtAmount(ef.betrag_netto)} ${ef.waehrung || ''}`} />}
-                        {ef.steuerbetrag != null && <Field label="Steuerbetrag" value={`${fmtAmount(ef.steuerbetrag)} ${ef.waehrung || ''}`} />}
-                        {ef.steuersatz != null && <Field label="Steuersatz" value={`${ef.steuersatz}%`} />}
-                      </div>
-                      {(ef.absender_strasse || ef.absender_plz || ef.iban) && (
-                        <div style={{ padding: '0 14px 10px', borderTop: '1px solid #f3f4f6', paddingTop: 8, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 12px', fontSize: 12 }}>
-                          {ef.absender_strasse && <Field label="Straße" value={ef.absender_strasse} />}
-                          {(ef.absender_plz || ef.absender_ort) && <Field label="PLZ / Ort" value={[ef.absender_plz, ef.absender_ort].filter(Boolean).join(' ')} />}
-                          {ef.absender_land && <Field label="Land" value={ef.absender_land} />}
-                          {ef.iban && <Field label="IBAN" value={ef.iban} wide />}
-                          {ef.bic && <Field label="BIC" value={ef.bic} />}
-                        </div>
-                      )}
-                    </div>
-                  )
-                })()}
+                {/* ABBYY-Formular (Nachbau des Validierungs-Overlays) */}
+                <div style={{ marginTop: 18 }}>
+                  <AbbyyOverlay
+                    fields={buildAbbyyFields(doc)}
+                    saving={savingFields}
+                    forwarding={forwarding}
+                    onSave={handleSaveFields}
+                    onForward={handleForward}
+                  />
+                </div>
 
                 {!correctionMode && (
                   <div style={S.actions}>

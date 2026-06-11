@@ -68,7 +68,9 @@ export async function uploadDocumentsBatch(
 
 export async function updateDocument(
   id: string,
-  updates: Partial<Pick<Document, 'doc_type' | 'sender' | 'ampel' | 'status' | 'user_correction'>>
+  updates: Partial<Pick<Document, 'doc_type' | 'sender' | 'ampel' | 'status' | 'user_correction'>> & {
+    extracted_fields?: Record<string, any>
+  }
 ): Promise<Document> {
   const res = await apiClient.patch<Document>(`/documents/${id}`, updates)
   return res.data
