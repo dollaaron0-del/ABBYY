@@ -189,17 +189,20 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`Uploads directory: ${UPLOADS_PATH}`);
 
-  // ABBYY-Autopilot starten (läuft nur, wenn in den Einstellungen aktiviert)
+  // Hängende Dokumente automatisch neu starten + Watchdog aktivieren
+  recoverStuckDocuments();
+  startProcessingWatchdog();
+
+  // ABBYY-Autopilot starten (optional – läuft nur, wenn aktiviert und Dateien vorhanden)
   try {
     const autopilot = require('./services/abbyyAutopilot');
     autopilot.startScheduler();
   } catch (err) {
-    console.error('[Autopilot] Konnte nicht gestartet werden:', err.message);
+    // Kein Fehler wenn die Dateien noch nicht vorhanden sind
+    if (!err.message.includes('Cannot find module')) {
+      console.error('[Autopilot] Konnte nicht gestartet werden:', err.message);
+    }
   }
-
-  // Hängende Dokumente automatisch neu starten + Watchdog aktivieren
-  recoverStuckDocuments();
-  startProcessingWatchdog();
 });
 
 module.exports = app;

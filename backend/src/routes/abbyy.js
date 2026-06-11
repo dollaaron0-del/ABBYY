@@ -204,15 +204,21 @@ router.post('/forward-batch', async (req, res) => {
 });
 
 // --- FlexiCapture Autopilot ---
-const connector = require('../services/abbyyConnector');
-const autopilot = require('../services/abbyyAutopilot');
+// Lazy requires: falls die Dateien noch nicht vorhanden sind (ältere Installation),
+// schlägt nur der einzelne Route-Aufruf fehl – der Server startet trotzdem.
+function getConnector() {
+  return require('../services/abbyyConnector');
+}
+function getAutopilot() {
+  return require('../services/abbyyAutopilot');
+}
 
-// GET /api/abbyy/autopilot/status - Konfiguration & Zustand
+// GET /api/abbyy/autopilot/status
 router.get('/autopilot/status', (req, res) => {
   try {
-    const cfg = connector.getConfig();
+    const cfg = getConnector().getConfig();
     res.json({
-      configured: connector.isConfigured(),
+      configured: getConnector().isConfigured(),
       enabled: cfg.autopilotEnabled,
       simulation: cfg.simulation,
       auto_complete_threshold: cfg.autoCompleteThreshold,
@@ -224,20 +230,20 @@ router.get('/autopilot/status', (req, res) => {
   }
 });
 
-// GET /api/abbyy/autopilot/test - Verbindung zu ABBYY prüfen
+// GET /api/abbyy/autopilot/test
 router.get('/autopilot/test', async (req, res) => {
   try {
-    const result = await connector.testConnection();
+    const result = await getConnector().testConnection();
     res.json(result);
   } catch (err) {
     res.status(200).json({ success: false, message: err.message });
   }
 });
 
-// POST /api/abbyy/autopilot/run - einen Durchlauf manuell auslösen
+// POST /api/abbyy/autopilot/run
 router.post('/autopilot/run', async (req, res) => {
   try {
-    const summary = await autopilot.runCycle();
+    const summary = await getAutopilot().runCycle();
     res.json({ message: 'Autopilot-Durchlauf abgeschlossen', summary });
   } catch (err) {
     res.status(500).json({ error: err.message });
