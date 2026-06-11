@@ -29,13 +29,21 @@ function buildPrompt(text, threshold) {
   return `Du bist ein Experte für die Analyse von Geschäftsdokumenten in einem Hotelbetrieb.
 Analysiere das folgende Dokument und antworte NUR mit einem JSON-Objekt.
 
+WICHTIG ZUM ABSENDER:
+Der Absender ist das Unternehmen, das die Rechnung AUSSTELLT und Geld bekommt
+(der Lieferant / Rechnungssteller). Das ist meist die Firma im Briefkopf ganz oben
+oder bei "Sitz der Gesellschaft" / der Firma mit der Bankverbindung und Steuernummer.
+Der EMPFÄNGER ist NICHT der Absender. Empfänger sind unsere eigenen Hotels, z.B.
+"AMERON", "Althoff", oder eine Adresse die nach "An:" bzw. als Anschrift steht.
+Gib als "absender" niemals den Empfänger/das Hotel zurück, sondern immer den Lieferanten.
+
 Dokumenttext:
 ${truncated}
 
 Antworte mit folgendem JSON-Format:
 {
   "dokumenttyp": "Rechnung" | "Mahnung" | "Behördenbescheid" | "Unleserlich" | "Sonstiges",
-  "absender": "Name des Absenders oder null",
+  "absender": "Name des rechnungsstellenden Unternehmens (Lieferant) oder null",
   "konfidenz": 0-100,
   "begruendung": "Kurze Begründung der Klassifizierung",
   "ampel": "gruen" | "gelb" | "rot"
