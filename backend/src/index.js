@@ -85,7 +85,7 @@ function startProcessingWatchdog() {
           AND COALESCE(
             (SELECT MAX(datetime(pl.created_at)) FROM processing_log pl WHERE pl.document_id = documents.id),
             datetime(created_at)
-          ) < datetime('now', '-15 minutes')
+          ) < datetime('now', '-8 minutes')
       `).run();
       if (result.changes > 0) {
         console.warn(`[Watchdog] ${result.changes} hängende(s) Dokument(e) auf Fehler gesetzt.`);

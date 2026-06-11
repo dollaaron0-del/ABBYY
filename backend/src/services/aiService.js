@@ -180,6 +180,9 @@ async function analyzeWithOllama(text) {
   const settings = getSettings();
   const prompt = buildPrompt(text, settings.confidenceThreshold);
 
+  const os = require('os');
+  const cpuCount = Math.max(2, os.cpus().length);
+
   try {
     const response = await axios.post(
       `${settings.ollamaHost}/api/generate`,
@@ -190,13 +193,15 @@ async function analyzeWithOllama(text) {
         keep_alive: '30m',
         options: {
           temperature: 0.1,
-          num_predict: 512,
+          num_predict: 400,
           top_p: 0.9,
+          num_thread: cpuCount,
         },
       },
       {
-        // Erstes Laden eines großen Modells auf der CPU kann mehrere Minuten dauern
-        timeout: 600000,
+        // Erstes Laden des Modells auf der CPU kann etwas dauern, aber nicht 10 Min.
+        // 4 Minuten reichen sicher; danach lieber Fehler als endloses Warten.
+        timeout: 240000,
         headers: { 'Content-Type': 'application/json' },
       }
     );

@@ -155,16 +155,18 @@ async function processDocument(documentId) {
   try {
     // Step 1: OCR
     logStep(documentId, 'ocr', 'running', `OCR gestartet für ${path.basename(doc.file_path)}`);
+    const ocrStart = Date.now();
     try {
       const ocrResult = await extractText(doc.file_path, doc.file_type);
       ocrText = ocrResult.text;
       ocrConfidence = ocrResult.confidence;
 
+      const ocrSecs = ((Date.now() - ocrStart) / 1000).toFixed(1);
       logStep(
         documentId,
         'ocr',
         'success',
-        `OCR abgeschlossen. ${ocrText.length} Zeichen extrahiert. Konfidenz: ${ocrConfidence}%`
+        `OCR abgeschlossen in ${ocrSecs}s. ${ocrText.length} Zeichen extrahiert. Konfidenz: ${ocrConfidence}%`
       );
     } catch (ocrErr) {
       logStep(documentId, 'ocr', 'error', `OCR fehlgeschlagen: ${ocrErr.message}`);
@@ -173,14 +175,16 @@ async function processDocument(documentId) {
     }
 
     // Step 2: AI Analysis
-    logStep(documentId, 'ai_analysis', 'running', 'KI-Analyse gestartet');
+    logStep(documentId, 'ai_analysis', 'running', 'KI-Analyse gestartet (Ollama)');
+    const aiStart = Date.now();
     try {
       aiResult = await analyzeDocument(ocrText);
+      const aiSecs = ((Date.now() - aiStart) / 1000).toFixed(1);
       logStep(
         documentId,
         'ai_analysis',
         'success',
-        `KI-Analyse: ${aiResult.doc_type}, Absender: ${aiResult.sender || 'unbekannt'}, Konfidenz: ${aiResult.confidence}%`
+        `KI-Analyse in ${aiSecs}s: ${aiResult.doc_type}, Absender: ${aiResult.sender || 'unbekannt'}, Konfidenz: ${aiResult.confidence}%`
       );
     } catch (aiErr) {
       logStep(documentId, 'ai_analysis', 'error', `KI-Analyse fehlgeschlagen: ${aiErr.message}`);

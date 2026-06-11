@@ -8,25 +8,66 @@ const os = require('os');
 
 const db = require('../database/db');
 
+// Sprachdaten lokal zwischenspeichern, damit sie nur EINMAL geladen werden
+// und im abgeschotteten Netzwerk nicht wiederholt aus dem Internet kommen müssen.
+const TESS_CACHE = process.env.TESSDATA_PATH || path.join(__dirname, '../../../data/tessdata');
+try { fs.mkdirSync(TESS_CACHE, { recursive: true }); } catch (_) {}
+
 function getOcrLanguage() {
   try {
     const row = db.prepare("SELECT value FROM settings WHERE key = 'ocr_language'").get();
-    return row ? row.value : 'deu+eng';
+    return row ? row.value : 'deu';
   } catch {
-    return 'deu+eng';
+    return 'deu';
   }
 }
 
+// --- Worker-Singleton -------------------------------------------------------
+// Tesseract-Worker sind teuer in der Erstellung (WASM-Init + Sprachdaten laden).
+// Wir erstellen den Worker EINMAL pro Sprache und verwenden ihn wieder.
+const workers = new Map(); // language -> { worker, ready }
+
+async function getWorker(language) {
+  if (workers.has(language)) {
+    return workers.get(language);
+  }
+
+  const worker = await Tesseract.createWorker(language, 1, {
+    logger: () => {},
+    cachePath: TESS_CACHE,
+    langPath: TESS_CACHE,
+    gzip: true,
+  });
+
+  await worker.setParameters({
+    tessedit_pageseg_mode: '1',
+    preserve_interword_spaces: '1',
+  });
+
+  workers.set(language, worker);
+  return worker;
+}
+
 /**
- * Preprocess an image with sharp to improve OCR quality:
- * - Convert to grayscale
- * - Normalize contrast
- * - Sharpen
- * - Convert to PNG for Tesseract
+ * Hilfsfunktion: bricht eine Operation nach n Millisekunden ab,
+ * damit OCR niemals endlos hängen kann.
+ */
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} Zeitüberschreitung nach ${Math.round(ms / 1000)}s`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Bild vorverarbeiten für bessere OCR-Qualität.
+ * Sehr große Bilder werden verkleinert (beschleunigt OCR deutlich).
  */
 async function preprocessImage(inputPath) {
   const tmpPath = path.join(os.tmpdir(), `ocr_prep_${Date.now()}.png`);
   await sharp(inputPath)
+    .resize({ width: 2000, height: 2000, fit: 'inside', withoutEnlargement: true })
     .grayscale()
     .normalize()
     .sharpen({ sigma: 1.5 })
@@ -35,71 +76,41 @@ async function preprocessImage(inputPath) {
   return tmpPath;
 }
 
+const OCR_TIMEOUT_MS = 120000; // 2 Minuten pro Dokument maximal
+
 /**
- * Extract text from a PDF file.
- * For PDFs, we use Tesseract directly (it handles PDF parsing internally
- * when given the path; alternatively we read the file as a buffer).
- * For production, a pdf-to-image conversion step would be ideal,
- * but here we use Tesseract's built-in PDF support.
+ * Text aus einer PDF-Datei extrahieren.
  */
 async function extractFromPdf(filePath, language) {
-  try {
-    const worker = await Tesseract.createWorker(language, 1, {
-      logger: () => {},
-    });
-
-    const result = await worker.recognize(filePath);
-    await worker.terminate();
-
-    return {
-      text: result.data.text || '',
-      confidence: Math.round(result.data.confidence || 0),
-    };
-  } catch (err) {
-    throw new Error(`PDF OCR fehlgeschlagen: ${err.message}`);
-  }
+  const worker = await getWorker(language);
+  const result = await withTimeout(worker.recognize(filePath), OCR_TIMEOUT_MS, 'PDF-OCR:');
+  return {
+    text: result.data.text || '',
+    confidence: Math.round(result.data.confidence || 0),
+  };
 }
 
 /**
- * Extract text from image files (jpg, png, tiff, bmp).
+ * Text aus Bilddateien extrahieren (jpg, png, tiff, bmp).
  */
 async function extractFromImage(filePath, language) {
   let preprocessedPath = null;
-
   try {
     preprocessedPath = await preprocessImage(filePath);
-
-    const worker = await Tesseract.createWorker(language, 1, {
-      logger: () => {},
-    });
-
-    await worker.setParameters({
-      tessedit_pageseg_mode: '1', // Automatic page segmentation with OSD
-      preserve_interword_spaces: '1',
-    });
-
-    const result = await worker.recognize(preprocessedPath);
-    await worker.terminate();
-
+    const worker = await getWorker(language);
+    const result = await withTimeout(worker.recognize(preprocessedPath), OCR_TIMEOUT_MS, 'Bild-OCR:');
     return {
       text: result.data.text || '',
       confidence: Math.round(result.data.confidence || 0),
     };
   } catch (err) {
-    // Fallback: try without preprocessing
-    try {
-      const worker = await Tesseract.createWorker(language, 1, {
-        logger: () => {},
-      });
-      const result = await worker.recognize(filePath);
-      await worker.terminate();
-      return {
-        text: result.data.text || '',
-        confidence: Math.round(result.data.confidence || 0),
-      };
-    } catch (fallbackErr) {
-      throw new Error(`Bild-OCR fehlgeschlagen: ${fallbackErr.message}`);
-    }
+    // Fallback: ohne Vorverarbeitung direkt erkennen
+    const worker = await getWorker(language);
+    const result = await withTimeout(worker.recognize(filePath), OCR_TIMEOUT_MS, 'Bild-OCR (Fallback):');
+    return {
+      text: result.data.text || '',
+      confidence: Math.round(result.data.confidence || 0),
+    };
   } finally {
     if (preprocessedPath && fs.existsSync(preprocessedPath)) {
       fs.unlink(preprocessedPath, () => {});
@@ -108,10 +119,7 @@ async function extractFromImage(filePath, language) {
 }
 
 /**
- * Main OCR entry point.
- * @param {string} filePath - absolute path to the document file
- * @param {string} fileType - extension without dot (pdf, jpg, png, tiff, bmp)
- * @returns {{ text: string, confidence: number }}
+ * Haupteinstieg OCR.
  */
 async function extractText(filePath, fileType) {
   if (!fs.existsSync(filePath)) {
@@ -122,7 +130,6 @@ async function extractText(filePath, fileType) {
   const type = (fileType || '').toLowerCase().replace('.', '');
 
   let result;
-
   if (type === 'pdf') {
     result = await extractFromPdf(filePath, language);
   } else if (['jpg', 'jpeg', 'png', 'tiff', 'tif', 'bmp'].includes(type)) {
@@ -131,32 +138,20 @@ async function extractText(filePath, fileType) {
     throw new Error(`Nicht unterstützter Dateityp für OCR: ${type}`);
   }
 
-  // Clean up the extracted text
   result.text = cleanOcrText(result.text);
-
   return result;
 }
 
-/**
- * Clean and normalize OCR output text.
- */
 function cleanOcrText(text) {
   if (!text) return '';
-
   return text
-    // Remove excessive whitespace
     .replace(/\r\n/g, '\n')
     .replace(/[ \t]+/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
-    // Remove non-printable characters except newline
     .replace(/[^\x20-\x7E\xA0-\xFF\n]/g, '')
     .trim();
 }
 
-/**
- * Check if text has enough content to be useful for analysis.
- * Returns true if text has >= 30 meaningful characters.
- */
 function hasEnoughText(text) {
   if (!text) return false;
   const cleaned = text.replace(/\s/g, '');
