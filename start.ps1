@@ -50,9 +50,13 @@ $BACKEND_MODULES = "$SCRIPT_DIR\backend\node_modules"
 if (-not (Test-Path $BACKEND_MODULES)) {
     Write-Host "[2/4] Backend-Pakete werden installiert (einmalig, ~2 Min.)..." -ForegroundColor Yellow
     Push-Location "$SCRIPT_DIR\backend"
-    & $NPM_CMD install --no-audit --no-fund 2>&1 | Out-Null
+    $npmResult = & $NPM_CMD install --no-audit --no-fund 2>&1
     Pop-Location
-    Write-Host "        Pakete installiert." -ForegroundColor Green
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "        Warnung beim Installieren (wird trotzdem fortgesetzt)." -ForegroundColor Yellow
+    } else {
+        Write-Host "        Pakete installiert." -ForegroundColor Green
+    }
 } else {
     Write-Host "[2/4] Backend-Pakete vorhanden." -ForegroundColor Green
 }
