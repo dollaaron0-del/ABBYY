@@ -80,6 +80,32 @@ Regeln:
 }
 
 /**
+ * Prüft, ob ein erkannter "Absender" in Wahrheit keine Firma ist,
+ * sondern z.B. eine Lieferscheinnummer, Bestellnummer o.ä.
+ * Solche Werte werden verworfen (→ null), damit nie eine Nummer als Absender erscheint.
+ */
+function sanitizeSender(sender) {
+  if (!sender) return null;
+  const s = String(sender).trim();
+  if (s.length < 3) return null;
+
+  // Bezeichnungen, die typischerweise mit einer Nummer verwechselt werden
+  const labelPattern = /(liefer|wefer)?schein|nummer|nr\.?|bestell|rechnungs|kunden|auftrags|beleg|referenz|datum|betrag|summe|ust|steuer/i;
+  // Wenn der Wert hauptsächlich aus einer solchen Bezeichnung + Ziffern besteht → keine Firma
+  const digitCount = (s.match(/\d/g) || []).length;
+  const letterCount = (s.match(/[a-zäöüß]/gi) || []).length;
+
+  // Reine bzw. überwiegend numerische Werte sind keine Firma
+  if (letterCount === 0) return null;
+  if (digitCount > 0 && digitCount >= letterCount) return null;
+
+  // Enthält eine "Nummern-Bezeichnung" und Ziffern → vermutlich eine Nummer, keine Firma
+  if (labelPattern.test(s) && digitCount > 0) return null;
+
+  return s;
+}
+
+/**
  * Parse the AI response JSON, handling common LLM quirks.
  */
 function parseAiResponse(responseText) {
@@ -110,7 +136,8 @@ function parseAiResponse(responseText) {
 
   // Normalize fields with fallbacks
   const docType = parsed.dokumenttyp || parsed.doc_type || parsed.type || 'Sonstiges';
-  const sender = parsed.absender || parsed.sender || parsed.absender_name || null;
+  const rawSender = parsed.absender || parsed.sender || parsed.absender_name || null;
+  const sender = sanitizeSender(rawSender);
   const confidence = Math.min(100, Math.max(0, parseInt(parsed.konfidenz ?? parsed.confidence ?? 0, 10)));
   const reasoning = parsed.begruendung || parsed.reasoning || parsed.begründung || '';
   const ampel = parsed.ampel || 'rot';
