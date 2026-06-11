@@ -110,14 +110,14 @@ router.get('/stats', (req, res) => {
     const stats = db.prepare(`
       SELECT
         COUNT(*) as total,
-        SUM(CASE WHEN ampel = 'gruen' THEN 1 ELSE 0 END) as gruen,
-        SUM(CASE WHEN ampel = 'gelb' THEN 1 ELSE 0 END) as gelb,
-        SUM(CASE WHEN ampel = 'rot' THEN 1 ELSE 0 END) as rot,
-        SUM(CASE WHEN status = 'processed' THEN 1 ELSE 0 END) as processed,
-        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
-        SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error,
-        SUM(CASE WHEN status = 'forwarded' THEN 1 ELSE 0 END) as forwarded,
-        AVG(confidence) as avg_confidence
+        COALESCE(SUM(CASE WHEN ampel = 'gruen' THEN 1 ELSE 0 END), 0) as gruen,
+        COALESCE(SUM(CASE WHEN ampel = 'gelb' THEN 1 ELSE 0 END), 0) as gelb,
+        COALESCE(SUM(CASE WHEN ampel = 'rot' THEN 1 ELSE 0 END), 0) as rot,
+        COALESCE(SUM(CASE WHEN status = 'processed' THEN 1 ELSE 0 END), 0) as processed,
+        COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0) as pending,
+        COALESCE(SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END), 0) as error,
+        COALESCE(SUM(CASE WHEN status = 'forwarded' THEN 1 ELSE 0 END), 0) as forwarded,
+        COALESCE(AVG(confidence), 0) as avg_confidence
       FROM documents ${where}
     `).get(...params);
 
@@ -125,11 +125,11 @@ router.get('/stats', (req, res) => {
     const todayStats = db.prepare(`
       SELECT
         COUNT(*) as total,
-        SUM(CASE WHEN ampel = 'gruen' THEN 1 ELSE 0 END) as gruen,
-        SUM(CASE WHEN ampel = 'gelb' THEN 1 ELSE 0 END) as gelb,
-        SUM(CASE WHEN ampel = 'rot' THEN 1 ELSE 0 END) as rot,
-        SUM(CASE WHEN status = 'processed' THEN 1 ELSE 0 END) as processed,
-        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending
+        COALESCE(SUM(CASE WHEN ampel = 'gruen' THEN 1 ELSE 0 END), 0) as gruen,
+        COALESCE(SUM(CASE WHEN ampel = 'gelb' THEN 1 ELSE 0 END), 0) as gelb,
+        COALESCE(SUM(CASE WHEN ampel = 'rot' THEN 1 ELSE 0 END), 0) as rot,
+        COALESCE(SUM(CASE WHEN status = 'processed' THEN 1 ELSE 0 END), 0) as processed,
+        COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0) as pending
       FROM documents WHERE date(created_at) = ?
     `).get(today);
 

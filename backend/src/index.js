@@ -9,12 +9,6 @@ const fs = require('fs');
 const cron = require('node-cron');
 
 const { initializeSchema } = require('./database/schema');
-const documentsRouter = require('./routes/documents');
-const analysisRouter = require('./routes/analysis');
-const suppliersRouter = require('./routes/suppliers');
-const settingsRouter = require('./routes/settings');
-const abbyyRouter = require('./routes/abbyy');
-const reportsRouter = require('./routes/reports');
 
 const UPLOADS_PATH = process.env.UPLOADS_PATH || path.join(__dirname, '../../uploads');
 const PORT = process.env.PORT || 3001;
@@ -24,14 +18,22 @@ const requiredDirs = [
   path.join(UPLOADS_PATH, 'originals'),
   path.join(UPLOADS_PATH, 'processed'),
   path.join(UPLOADS_PATH, 'thumbnails'),
-  path.dirname(process.env.DATABASE_PATH || path.join(__dirname, '../../data/database.sqlite')),
 ];
 
 for (const dir of requiredDirs) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
+// Schema MUSS vor dem Laden der Routen initialisiert sein,
+// da die Routen-Module ihre SQL-Statements beim Laden vorbereiten.
 initializeSchema();
+
+const documentsRouter = require('./routes/documents');
+const analysisRouter = require('./routes/analysis');
+const suppliersRouter = require('./routes/suppliers');
+const settingsRouter = require('./routes/settings');
+const abbyyRouter = require('./routes/abbyy');
+const reportsRouter = require('./routes/reports');
 
 const app = express();
 

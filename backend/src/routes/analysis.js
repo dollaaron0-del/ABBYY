@@ -130,4 +130,30 @@ router.get('/status/:id', (req, res) => {
   }
 });
 
+// GET /api/analysis/ollama/models - get available Ollama models
+router.get('/ollama/models', async (req, res) => {
+  try {
+    const { getOllamaModels } = require('../services/aiService');
+    const models = await getOllamaModels();
+    res.json({ models });
+  } catch (err) {
+    res.status(500).json({ error: err.message, models: [] });
+  }
+});
+
+// GET /api/analysis/ollama/health - check Ollama health
+router.get('/ollama/health', async (req, res) => {
+  try {
+    const axios = require('axios');
+    const db = require('../database/db');
+    const row = db.prepare("SELECT value FROM settings WHERE key = 'ollama_host'").get();
+    const host = row ? row.value : 'http://localhost:11434';
+
+    const response = await axios.get(`${host}/api/tags`, { timeout: 5000 });
+    res.json({ status: 'ok', host, models_count: (response.data.models || []).length });
+  } catch (err) {
+    res.status(200).json({ status: 'error', error: err.message });
+  }
+});
+
 module.exports = router;
