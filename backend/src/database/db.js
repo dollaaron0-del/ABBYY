@@ -1,6 +1,5 @@
 'use strict';
 
-const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
 
@@ -11,10 +10,11 @@ let instance = null;
 function getDb() {
   if (!instance) {
     fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-    instance = new Database(DB_PATH, {
-      verbose: process.env.NODE_ENV === 'development' ? console.log : null,
-    });
 
+    // better-sqlite3 liefert für Node.js 18 fertige Windows-Binaries mit,
+    // keine Kompilierung nötig.
+    const Database = require('better-sqlite3');
+    instance = new Database(DB_PATH);
     instance.pragma('journal_mode = WAL');
     instance.pragma('foreign_keys = ON');
     instance.pragma('synchronous = NORMAL');

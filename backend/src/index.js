@@ -48,6 +48,12 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 app.use('/uploads', express.static(UPLOADS_PATH));
 
+// Frontend statisch ausliefern (eingebettet in die EXE)
+const PUBLIC_PATH = path.join(__dirname, '../public');
+if (fs.existsSync(PUBLIC_PATH)) {
+  app.use(express.static(PUBLIC_PATH));
+}
+
 app.get('/api/health', (_req, res) => {
   res.json({
     status: 'ok',
@@ -63,6 +69,16 @@ app.use('/api/suppliers', suppliersRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/abbyy', abbyyRouter);
 app.use('/api/reports', reportsRouter);
+
+// SPA Fallback: alle nicht-API Routen → index.html
+app.get('*', (req, res) => {
+  const indexFile = path.join(__dirname, '../public/index.html');
+  if (fs.existsSync(indexFile)) {
+    res.sendFile(indexFile);
+  } else {
+    res.status(404).json({ error: `Route not found: ${req.method} ${req.path}` });
+  }
+});
 
 app.use((req, res) => {
   res.status(404).json({ error: `Route not found: ${req.method} ${req.path}` });
