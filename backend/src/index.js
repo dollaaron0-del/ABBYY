@@ -37,6 +37,65 @@ for (const dir of requiredDirs) {
 // da die Routen-Module ihre SQL-Statements beim Laden vorbereiten.
 initializeSchema();
 
+// Hängengebliebene Dokumente lösen:
+// Wenn der Server während einer Analyse beendet wurde, bleibt das Dokument
+// sonst für immer auf "In Bearbeitung". Beim Start werden solche Dokumente
+// automatisch neu in die Verarbeitung gegeben.
+function recoverStuckDocuments() {
+  try {
+    const db = require('./database/db');
+    const stuck = db.prepare(`
+      SELECT id, original_name FROM documents
+      WHERE status IN ('processing', 'pending')
+    `).all();
+
+    if (stuck.length === 0) return;
+
+    console.log(`[Recovery] ${stuck.length} hängende(s) Dokument(e) gefunden – starte Analyse neu...`);
+    const { processDocument } = require('./services/documentProcessor');
+
+    for (const doc of stuck) {
+      db.prepare("UPDATE documents SET status = 'pending' WHERE id = ?").run(doc.id);
+      setImmediate(() => {
+        processDocument(doc.id).catch((err) => {
+          console.error(`[Recovery] Analyse von ${doc.original_name} fehlgeschlagen:`, err.message);
+        });
+      });
+    }
+  } catch (err) {
+    console.error('[Recovery] Fehler beim Wiederanlauf:', err.message);
+  }
+}
+
+// Watchdog: Dokumente, die länger als 15 Minuten "In Bearbeitung" sind,
+// werden auf Fehler gesetzt, damit sie nie endlos hängen bleiben.
+function startProcessingWatchdog() {
+  const db = require('./database/db');
+  setInterval(() => {
+    try {
+      // Maßgeblich ist der letzte Protokolleintrag: wenn seit über 15 Minuten
+      // nichts mehr passiert ist, gilt die Verarbeitung als hängengeblieben.
+      const result = db.prepare(`
+        UPDATE documents SET
+          status = 'error',
+          ampel = 'rot',
+          ai_reasoning = 'Analyse abgebrochen: Zeitüberschreitung (über 15 Minuten ohne Fortschritt). Bitte erneut analysieren.',
+          processed_at = datetime('now')
+        WHERE status = 'processing'
+          AND COALESCE(
+            (SELECT MAX(datetime(pl.created_at)) FROM processing_log pl WHERE pl.document_id = documents.id),
+            datetime(created_at)
+          ) < datetime('now', '-15 minutes')
+      `).run();
+      if (result.changes > 0) {
+        console.warn(`[Watchdog] ${result.changes} hängende(s) Dokument(e) auf Fehler gesetzt.`);
+      }
+    } catch (err) {
+      console.error('[Watchdog] Fehler:', err.message);
+    }
+  }, 60_000);
+}
+
 const documentsRouter = require('./routes/documents');
 const analysisRouter = require('./routes/analysis');
 const suppliersRouter = require('./routes/suppliers');
@@ -137,6 +196,10 @@ app.listen(PORT, '0.0.0.0', () => {
   } catch (err) {
     console.error('[Autopilot] Konnte nicht gestartet werden:', err.message);
   }
+
+  // Hängende Dokumente automatisch neu starten + Watchdog aktivieren
+  recoverStuckDocuments();
+  startProcessingWatchdog();
 });
 
 module.exports = app;
