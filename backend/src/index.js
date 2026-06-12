@@ -101,6 +101,7 @@ const analysisRouter = require('./routes/analysis');
 const suppliersRouter = require('./routes/suppliers');
 const settingsRouter = require('./routes/settings');
 const abbyyRouter = require('./routes/abbyy');
+const abbyyBotRouter = require('./routes/abbyyBot');
 const reportsRouter = require('./routes/reports');
 
 const app = express();
@@ -136,6 +137,7 @@ app.use('/api/analysis', analysisRouter);
 app.use('/api/suppliers', suppliersRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/abbyy', abbyyRouter);
+app.use('/api/abbyy/bot', abbyyBotRouter);
 app.use('/api/reports', reportsRouter);
 
 // SPA Fallback: alle nicht-API Routen → index.html
