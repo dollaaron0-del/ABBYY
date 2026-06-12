@@ -110,6 +110,20 @@ function initializeSchema() {
     db.exec(`ALTER TABLE documents ADD COLUMN extracted_fields TEXT`);
   } catch (_) { /* column already exists */ }
 
+  // Bot correction log – tracks what humans changed vs. what the bot suggested
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS bot_corrections (
+      id TEXT PRIMARY KEY,
+      document_name TEXT,
+      field_name TEXT NOT NULL,
+      bot_value TEXT,
+      human_value TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_bot_corrections_field ON bot_corrections(field_name);
+    CREATE INDEX IF NOT EXISTS idx_bot_corrections_created ON bot_corrections(created_at);
+  `);
+
   console.log('Database schema initialized successfully.');
 }
 

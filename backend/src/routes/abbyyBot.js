@@ -163,6 +163,97 @@ router.post('/log', (req, res) => {
   res.json({ ok: true });
 });
 
+/**
+ * POST /api/abbyy/bot/correction
+ * Called by C# script when a human submits a task (OnAfterVerification).
+ * Compares final field values to what bot suggested → stores differences.
+ *
+ * Body: { document_name, bot_fields: {...}, human_fields: {...} }
+ */
+router.post('/correction', (req, res) => {
+  const { document_name, bot_fields = {}, human_fields = {} } = req.body;
+
+  if (!human_fields || Object.keys(human_fields).length === 0) {
+    return res.status(400).json({ error: 'human_fields erforderlich' });
+  }
+
+  const corrections = [];
+  const allKeys = new Set([...Object.keys(bot_fields), ...Object.keys(human_fields)]);
+
+  for (const key of allKeys) {
+    const botVal = (bot_fields[key] || '').toString().trim();
+    const humanVal = (human_fields[key] || '').toString().trim();
+    if (humanVal && humanVal !== botVal) {
+      corrections.push({ field: key, bot: botVal || null, human: humanVal });
+    }
+  }
+
+  if (corrections.length > 0) {
+    const insert = db.prepare(`
+      INSERT INTO bot_corrections (id, document_name, field_name, bot_value, human_value)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    const insertMany = db.transaction((rows) => {
+      for (const r of rows) insert.run(require('uuid').v4(), document_name || null, r.field, r.bot, r.human);
+    });
+    insertMany(corrections);
+    console.log(`[AbbyyBot] ${corrections.length} Korrekturen gespeichert für: ${document_name}`);
+  }
+
+  res.json({ ok: true, corrections_saved: corrections.length });
+});
+
+/**
+ * GET /api/abbyy/bot/history?limit=50
+ * Returns recent bot activity and correction statistics.
+ */
+router.get('/history', (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
+
+  try {
+    const recentActivity = db.prepare(`
+      SELECT step, status, message, created_at
+      FROM processing_log
+      WHERE step LIKE 'abbyy_bot%'
+      ORDER BY created_at DESC
+      LIMIT ?
+    `).all(limit);
+
+    const correctionStats = db.prepare(`
+      SELECT field_name, COUNT(*) as count,
+             GROUP_CONCAT(DISTINCT human_value) as examples
+      FROM bot_corrections
+      GROUP BY field_name
+      ORDER BY count DESC
+      LIMIT 20
+    `).all();
+
+    const recentCorrections = db.prepare(`
+      SELECT document_name, field_name, bot_value, human_value, created_at
+      FROM bot_corrections
+      ORDER BY created_at DESC
+      LIMIT ?
+    `).all(limit);
+
+    const totalStats = db.prepare(`
+      SELECT
+        COUNT(*) as total_corrections,
+        COUNT(DISTINCT document_name) as total_documents,
+        COUNT(DISTINCT field_name) as total_fields
+      FROM bot_corrections
+    `).get();
+
+    res.json({
+      recent_activity: recentActivity,
+      correction_stats: correctionStats,
+      recent_corrections: recentCorrections,
+      totals: totalStats,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ---------------------------------------------------------------------------
 
 function mergeFields(abbyyFields, aiFields, aiResult) {

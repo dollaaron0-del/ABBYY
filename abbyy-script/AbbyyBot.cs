@@ -1,41 +1,41 @@
 // =============================================================================
-// ABBYY FlexiCapture – KI-Bot Skript
+// ABBYY FlexiCapture – KI-Bot Skript v2
 // Datei: AbbyyBot.cs
 // Einzufügen in: ABBYY FlexiCapture → Projekt → Skript-Editor
 //
-// Dieses Skript verbindet sich beim Öffnen eines Dokuments mit dem lokalen
-// KI-Backend (127.0.0.1:3001), analysiert den Inhalt und füllt die Felder
-// automatisch aus. Bei hoher Konfidenz wird der Task selbstständig abgeschlossen.
+// Events die gebunden werden müssen:
+//   Document_OnOpen        → AbbyyBotScript.OnDocumentOpened
+//   Document_OnClose       → AbbyyBotScript.OnDocumentClosed  (für Korrektur-Tracking)
 //
-// Installation: Siehe README_INSTALLATION.txt
+// Vollständige Installationsanleitung: README_INSTALLATION.txt
 // =============================================================================
 
 using System;
 using System.IO;
 using System.Net;
 using System.Text;
+using System.Collections.Generic;
 using System.Web.Script.Serialization;
+using System.Threading;
 
 // ---- KONFIGURATION ----------------------------------------------------------
-// Passe diese Werte an deine Installation an:
 public static class BotConfig
 {
-    public const string API_BASE = "http://127.0.0.1:3001/api/abbyy/bot";
-    public const int    TIMEOUT_MS = 300000; // 5 Minuten (KI braucht Zeit)
-    public const bool   LOG_TO_CONSOLE = true;
+    public const string API_BASE    = "http://127.0.0.1:3001/api/abbyy/bot";
+    public const int    TIMEOUT_MS  = 300000; // 5 Minuten max. für KI-Analyse
+    public const bool   SHOW_STATUS = true;   // Status-Meldungen anzeigen
 }
 // -----------------------------------------------------------------------------
 
-/// <summary>
-/// Hauptskript – wird von ABBYY FlexiCapture aufgerufen.
-/// Binde die Methoden an die entsprechenden Dokument-Events im Script Editor.
-/// </summary>
 public class AbbyyBotScript
 {
+    // Speichert die Bot-Felder pro Dokument um später Korrekturen zu erkennen
+    private static readonly Dictionary<string, Dictionary<string, string>> _botFields
+        = new Dictionary<string, Dictionary<string, string>>();
+
     // =========================================================================
-    // EVENT: Wird aufgerufen wenn ein Dokument in der Verification Station
-    //        zur Bearbeitung geöffnet wird.
-    //        Binde diesen Event an: Dokument → OnOpen (oder BeforeVerification)
+    // EVENT: Dokument wird zur Verifikation geöffnet
+    //        Binde an: Document → OnOpen
     // =========================================================================
     public static void OnDocumentOpened(IScriptingHost host)
     {
@@ -43,143 +43,183 @@ public class AbbyyBotScript
         string docName = GetDocumentName(doc);
 
         Log("=== ABBYY KI-Bot gestartet für: " + docName);
+        ShowStatus(host, "🤖 KI-Bot analysiert... bitte warten", false);
 
         try
         {
-            // 1. OCR-Text aus ABBYY-Dokument lesen
+            // Schritt 1: OCR-Text und vorhandene Felder auslesen
             string ocrText = ExtractOcrText(doc);
-            Log("OCR-Text gelesen: " + ocrText.Length + " Zeichen");
-
-            // 2. Vorhandene ABBYY-Felder auslesen
             var existingFields = ReadAbbyyFields(doc);
-            Log("Vorhandene ABBYY-Felder: " + existingFields.Count + " Felder");
 
-            // 3. An KI-Backend senden
+            Log("OCR: " + ocrText.Length + " Zeichen | ABBYY-Felder: " + existingFields.Count);
+
+            // Schritt 2: KI-Backend aufrufen
             var response = CallBotApi(ocrText, docName, existingFields);
             if (response == null)
             {
-                Log("FEHLER: Keine Antwort vom KI-Backend. Manuelle Überprüfung erforderlich.");
-                ShowMessage(host, "KI-Bot: Backend nicht erreichbar. Bitte manuell prüfen.", false);
+                ShowStatus(host, "⚠️ KI-Bot: Backend nicht erreichbar. Bitte manuell ausfüllen.", false);
+                Log("FEHLER: Backend nicht erreichbar");
                 return;
             }
 
-            Log("KI-Ergebnis: " + response["doc_type"] + " | Konfidenz: " + response["confidence"] + "% | Ampel: " + response["ampel"]);
+            // Schritt 3: Felder eintragen
+            var fields = response["fields"] as Dictionary<string, object>;
+            var botFilledFields = new Dictionary<string, string>();
 
-            // 4. Felder in ABBYY eintragen
-            var fields = response["fields"] as System.Collections.Generic.Dictionary<string, object>;
             if (fields != null && fields.Count > 0)
             {
-                int filled = FillAbbyyFields(doc, fields);
-                Log("Felder ausgefüllt: " + filled + " von " + fields.Count);
+                int filled = FillAbbyyFields(doc, fields, botFilledFields);
+                Log("Felder ausgefüllt: " + filled);
+
+                // Bot-Felder merken (für späteres Korrektur-Tracking)
+                lock (_botFields) { _botFields[docName] = botFilledFields; }
             }
 
-            // 5. Entscheidung: Auto-Abschluss oder manuelle Prüfung
-            string decision  = response["decision"] as string ?? "manual_review";
-            string reason     = response["reason"]   as string ?? "";
-            string ampel      = response["ampel"]    as string ?? "rot";
+            // Schritt 4: Entscheidung
+            string decision  = (response["decision"] as string) ?? "manual_review";
+            string reason    = (response["reason"]   as string) ?? "";
+            string ampel     = (response["ampel"]    as string) ?? "rot";
+            string docType   = (response["doc_type"] as string) ?? "Unbekannt";
             int    confidence = Convert.ToInt32(response["confidence"] ?? 0);
+            string supplier  = (response["supplier_name"] as string) ?? "";
+            string ampelIcon = ampel == "gruen" ? "🟢" : (ampel == "gelb" ? "🟡" : "🔴");
+
+            Log("Entscheidung: " + decision + " | " + reason);
 
             if (decision == "auto_complete")
             {
-                Log("AUTO-ABSCHLUSS: " + reason);
-                ShowMessage(host,
-                    "KI-Bot: Alle Felder ausgefüllt ✓\n" +
-                    "Konfidenz: " + confidence + "%\n" +
-                    "Lieferant: " + (response["supplier_name"] ?? "erkannt") + "\n\n" +
-                    "Task wird automatisch abgeschlossen...",
+                ShowStatus(host,
+                    "✅ KI-Bot: Alle Felder ausgefüllt\n" +
+                    docType + " | " + confidence + "% | " + supplier + "\n" +
+                    "Task wird in 3 Sekunden automatisch abgeschlossen...",
                     true);
 
-                // Kurz warten damit der Nutzer die Meldung lesen kann, dann abschließen
-                System.Threading.Thread.Sleep(2000);
-                doc.SendToNextStage(); // Task abschließen
+                Thread.Sleep(3000);
+                doc.SendToNextStage();
+
+                LogToBackend(docName, "auto_complete",
+                    docType + " | " + confidence + "% | " + supplier);
             }
             else
             {
-                string ampelSymbol = ampel == "gruen" ? "🟢" : (ampel == "gelb" ? "🟡" : "🔴");
-                Log("MANUELLE PRÜFUNG: " + reason);
-                ShowMessage(host,
-                    "KI-Bot: Felder wurden ausgefüllt " + ampelSymbol + "\n" +
-                    "Dokumenttyp: " + response["doc_type"] + "\n" +
-                    "Konfidenz: " + confidence + "%\n\n" +
-                    "Bitte prüfen: " + reason,
+                ShowStatus(host,
+                    ampelIcon + " KI-Bot: Felder ausgefüllt – bitte prüfen\n" +
+                    docType + " | " + confidence + "%\n" +
+                    reason,
                     false);
-            }
 
-            // 6. Aktion an Backend loggen
-            LogToBackend(docName, "document_processed",
-                decision + " | " + response["doc_type"] + " | " + confidence + "% | " + reason);
+                LogToBackend(docName, "manual_review",
+                    docType + " | " + confidence + "% | " + reason);
+            }
         }
         catch (Exception ex)
         {
             Log("KRITISCHER FEHLER: " + ex.Message);
-            ShowMessage(host, "KI-Bot Fehler: " + ex.Message + "\n\nBitte manuell ausfüllen.", false);
+            ShowStatus(host, "❌ KI-Bot Fehler: " + ex.Message + "\nBitte manuell ausfüllen.", false);
         }
+    }
+
+    // =========================================================================
+    // EVENT: Dokument wird abgeschlossen / zur nächsten Station geschickt
+    //        Binde an: Document → OnClose  ODER  AfterVerification
+    //        Zweck: Erkennen was der Mensch geändert hat (für Lernfunktion)
+    // =========================================================================
+    public static void OnDocumentClosed(IScriptingHost host)
+    {
+        IDocument doc = host.Document;
+        string docName = GetDocumentName(doc);
+
+        Dictionary<string, string> botFieldsCopy;
+        lock (_botFields)
+        {
+            if (!_botFields.TryGetValue(docName, out botFieldsCopy))
+                return; // Bot hatte dieses Dokument nicht bearbeitet
+            _botFields.Remove(docName);
+        }
+
+        // Finale ABBYY-Feldwerte lesen
+        var finalFields = ReadAbbyyFields(doc);
+
+        // Unterschiede an Backend melden
+        try
+        {
+            var serializer = new JavaScriptSerializer();
+            var payload = new Dictionary<string, object>
+            {
+                { "document_name",  docName },
+                { "bot_fields",    botFieldsCopy },
+                { "human_fields",  finalFields },
+            };
+            string json = serializer.Serialize(payload);
+            byte[] data = Encoding.UTF8.GetBytes(json);
+
+            var request = (HttpWebRequest)WebRequest.Create(BotConfig.API_BASE + "/correction");
+            request.Method        = "POST";
+            request.ContentType   = "application/json; charset=utf-8";
+            request.ContentLength = data.Length;
+            request.Timeout       = 5000;
+
+            using (var stream = request.GetRequestStream())
+                stream.Write(data, 0, data.Length);
+            request.GetResponse();
+        }
+        catch { /* Korrektur-Log darf den Ablauf nie blockieren */ }
     }
 
     // =========================================================================
     // Hilfsmethoden
     // =========================================================================
 
-    /// <summary>Liest den gesamten OCR-Text des Dokuments aus ABBYY.</summary>
     private static string ExtractOcrText(IDocument doc)
     {
         var sb = new StringBuilder();
         try
         {
-            // Volltext über alle Seiten
             for (int p = 0; p < doc.Pages.Count; p++)
-            {
-                IPage page = doc.Pages[p];
-                sb.AppendLine(page.Text);
-            }
+                sb.AppendLine(doc.Pages[p].Text);
         }
         catch
         {
-            // Fallback: Feldwerte sammeln
             foreach (IField field in doc.Fields)
-            {
                 if (!string.IsNullOrEmpty(field.Text))
                     sb.AppendLine(field.Name + ": " + field.Text);
-            }
         }
         return sb.ToString().Trim();
     }
 
-    /// <summary>Liest alle bereits von ABBYY erkannten Felder aus.</summary>
-    private static System.Collections.Generic.Dictionary<string, string> ReadAbbyyFields(IDocument doc)
+    private static Dictionary<string, string> ReadAbbyyFields(IDocument doc)
     {
-        var result = new System.Collections.Generic.Dictionary<string, string>();
+        var result = new Dictionary<string, string>();
         foreach (IField field in doc.Fields)
-        {
             if (!string.IsNullOrWhiteSpace(field.Text))
                 result[field.Name.ToLower()] = field.Text;
-        }
         return result;
     }
 
-    /// <summary>Schreibt die vom KI-Backend zurückgegebenen Felder in das ABBYY-Dokument.</summary>
-    private static int FillAbbyyFields(IDocument doc, System.Collections.Generic.Dictionary<string, object> fields)
+    private static int FillAbbyyFields(IDocument doc,
+        Dictionary<string, object> fields,
+        Dictionary<string, string> filledOut)
     {
         int count = 0;
 
-        // Mapping: unser Feldname → ABBYY FlexiCapture Feldname
-        // WICHTIG: Passe diese Namen an dein FlexiCapture-Projekt an!
-        var fieldMapping = new System.Collections.Generic.Dictionary<string, string[]>
+        // Mapping: unser Feldname → mögliche ABBYY-Feldnamen
+        // WICHTIG: Rechte Spalte an eure FlexiCapture-Feldnamen anpassen!
+        var fieldMapping = new Dictionary<string, string[]>
         {
-            { "absender",         new[] { "Supplier", "Lieferant", "Absender", "VendorName" } },
-            { "absender_strasse", new[] { "SupplierStreet", "Strasse", "VendorStreet" } },
-            { "absender_plz",     new[] { "SupplierZip", "PLZ", "VendorZip" } },
-            { "absender_ort",     new[] { "SupplierCity", "Ort", "VendorCity" } },
-            { "rechnungsnummer",  new[] { "InvoiceNumber", "Rechnungsnummer", "InvNumber" } },
-            { "rechnungsdatum",   new[] { "InvoiceDate", "Rechnungsdatum", "InvDate" } },
-            { "faelligkeitsdatum",new[] { "DueDate", "Faelligkeitsdatum", "PaymentDueDate" } },
-            { "betrag_brutto",    new[] { "TotalAmount", "Brutto", "GrossAmount", "InvoiceTotal" } },
-            { "betrag_netto",     new[] { "NetAmount", "Netto", "NetTotal" } },
-            { "steuerbetrag",     new[] { "TaxAmount", "Steuer", "VATAmount" } },
-            { "steuersatz",       new[] { "TaxRate", "Steuersatz", "VATRate" } },
-            { "waehrung",         new[] { "Currency", "Waehrung" } },
-            { "iban",             new[] { "IBAN", "BankIBAN" } },
-            { "bic",              new[] { "BIC", "SWIFT", "BankBIC" } },
+            { "absender",          new[] { "Supplier", "Lieferant", "Absender", "VendorName" } },
+            { "absender_strasse",  new[] { "SupplierStreet", "Strasse", "VendorStreet" } },
+            { "absender_plz",      new[] { "SupplierZip", "PLZ", "VendorZip" } },
+            { "absender_ort",      new[] { "SupplierCity", "Ort", "VendorCity" } },
+            { "rechnungsnummer",   new[] { "InvoiceNumber", "Rechnungsnummer", "InvNumber" } },
+            { "rechnungsdatum",    new[] { "InvoiceDate", "Rechnungsdatum", "InvDate" } },
+            { "faelligkeitsdatum", new[] { "DueDate", "Faelligkeitsdatum", "PaymentDueDate" } },
+            { "betrag_brutto",     new[] { "TotalAmount", "Brutto", "GrossAmount", "InvoiceTotal" } },
+            { "betrag_netto",      new[] { "NetAmount", "Netto", "NetTotal" } },
+            { "steuerbetrag",      new[] { "TaxAmount", "Steuer", "VATAmount" } },
+            { "steuersatz",        new[] { "TaxRate", "Steuersatz", "VATRate" } },
+            { "waehrung",          new[] { "Currency", "Waehrung" } },
+            { "iban",              new[] { "IBAN", "BankIBAN" } },
+            { "bic",               new[] { "BIC", "SWIFT", "BankBIC" } },
         };
 
         foreach (var kvp in fields)
@@ -191,110 +231,81 @@ public class AbbyyBotScript
             string[] abbyyNames;
             if (!fieldMapping.TryGetValue(kvp.Key, out abbyyNames)) continue;
 
-            // Versuche jeden möglichen ABBYY-Feldnamen
             foreach (string abbyyName in abbyyNames)
             {
                 try
                 {
                     IField field = doc.Fields[abbyyName];
-                    if (field != null)
+                    if (field == null) continue;
+
+                    if (string.IsNullOrWhiteSpace(field.Text) || ShouldOverwrite(field.Text, kvp.Key))
                     {
-                        // Nur überschreiben wenn leer oder offensichtlich falsch
-                        if (string.IsNullOrWhiteSpace(field.Text) || ShouldOverwrite(field.Text, value, kvp.Key))
-                        {
-                            field.Text = value;
-                            count++;
-                            Log("  Feld gesetzt: " + abbyyName + " = " + value);
-                        }
-                        else
-                        {
-                            Log("  Feld behalten: " + abbyyName + " = " + field.Text + " (KI: " + value + ")");
-                        }
-                        break;
+                        field.Text = value;
+                        filledOut[abbyyName.ToLower()] = value;
+                        count++;
+                        Log("  → " + abbyyName + " = " + value);
                     }
+                    break;
                 }
-                catch { /* Feld existiert nicht → weiter */ }
+                catch { }
             }
         }
-
         return count;
     }
 
-    /// <summary>Entscheidet ob ein bestehendes ABBYY-Feld mit dem KI-Wert überschrieben werden soll.</summary>
-    private static bool ShouldOverwrite(string existingValue, string newValue, string fieldName)
+    private static bool ShouldOverwrite(string existing, string fieldName)
     {
-        // Absender: überschreiben wenn bestehender Wert wie eine Nummer aussieht
-        if (fieldName == "absender")
+        if (fieldName != "absender") return false;
+        int digits = 0, letters = 0;
+        foreach (char c in existing)
         {
-            int digits = 0, letters = 0;
-            foreach (char c in existingValue) {
-                if (char.IsDigit(c)) digits++;
-                else if (char.IsLetter(c)) letters++;
-            }
-            if (letters == 0) return true; // reine Zahl → KI-Wert ist besser
-            if (digits > 0 && digits >= letters) return true; // überwiegend Ziffern
+            if (char.IsDigit(c)) digits++;
+            else if (char.IsLetter(c)) letters++;
         }
-        return false;
+        return letters == 0 || (digits > 0 && digits >= letters);
     }
 
-    /// <summary>Ruft das KI-Backend auf und gibt die geparste Antwort zurück.</summary>
-    private static System.Collections.Generic.Dictionary<string, object> CallBotApi(
+    private static Dictionary<string, object> CallBotApi(
         string ocrText, string documentName,
-        System.Collections.Generic.Dictionary<string, string> existingFields)
+        Dictionary<string, string> existingFields)
     {
         try
         {
-            var serializer = new JavaScriptSerializer();
-            serializer.MaxJsonLength = 5000000;
-
-            var payload = new System.Collections.Generic.Dictionary<string, object>
+            var serializer = new JavaScriptSerializer { MaxJsonLength = 5000000 };
+            var payload = new Dictionary<string, object>
             {
                 { "ocr_text",       ocrText },
                 { "document_name",  documentName },
                 { "existing_fields", existingFields },
             };
 
-            string json = serializer.Serialize(payload);
-            byte[] data = Encoding.UTF8.GetBytes(json);
-
+            byte[] data = Encoding.UTF8.GetBytes(serializer.Serialize(payload));
             var request = (HttpWebRequest)WebRequest.Create(BotConfig.API_BASE + "/analyze");
-            request.Method      = "POST";
-            request.ContentType = "application/json; charset=utf-8";
+            request.Method        = "POST";
+            request.ContentType   = "application/json; charset=utf-8";
             request.ContentLength = data.Length;
-            request.Timeout     = BotConfig.TIMEOUT_MS;
+            request.Timeout       = BotConfig.TIMEOUT_MS;
 
-            using (var stream = request.GetRequestStream())
-                stream.Write(data, 0, data.Length);
-
-            using (var response = (HttpWebResponse)request.GetResponse())
-            using (var reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8))
-            {
-                string responseText = reader.ReadToEnd();
-                var result = serializer.Deserialize<System.Collections.Generic.Dictionary<string, object>>(responseText);
-                return result;
-            }
+            using (var s = request.GetRequestStream()) s.Write(data, 0, data.Length);
+            using (var resp = (HttpWebResponse)request.GetResponse())
+            using (var rdr = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
+                return serializer.Deserialize<Dictionary<string, object>>(rdr.ReadToEnd());
         }
         catch (Exception ex)
         {
-            Log("API-Aufruf fehlgeschlagen: " + ex.Message);
+            Log("API-Fehler: " + ex.Message);
             return null;
         }
     }
 
-    /// <summary>Sendet einen Log-Eintrag ans Backend (für Audit-Trail in der Datenbank).</summary>
-    private static void LogToBackend(string documentName, string action, string details)
+    private static void LogToBackend(string docName, string action, string details)
     {
         try
         {
             var serializer = new JavaScriptSerializer();
-            var payload = new System.Collections.Generic.Dictionary<string, string>
-            {
-                { "document_name", documentName },
-                { "action",        action },
-                { "details",       details },
-            };
-            string json = serializer.Serialize(payload);
-            byte[] data = Encoding.UTF8.GetBytes(json);
+            var payload = new Dictionary<string, string>
+            { { "document_name", docName }, { "action", action }, { "details", details } };
+            byte[] data = Encoding.UTF8.GetBytes(serializer.Serialize(payload));
 
             var request = (HttpWebRequest)WebRequest.Create(BotConfig.API_BASE + "/log");
             request.Method        = "POST";
@@ -302,33 +313,24 @@ public class AbbyyBotScript
             request.ContentLength = data.Length;
             request.Timeout       = 5000;
 
-            using (var stream = request.GetRequestStream())
-                stream.Write(data, 0, data.Length);
-
+            using (var s = request.GetRequestStream()) s.Write(data, 0, data.Length);
             request.GetResponse();
         }
-        catch { /* Log-Fehler dürfen den Bot nicht stoppen */ }
+        catch { }
     }
 
     private static string GetDocumentName(IDocument doc)
     {
-        try { return doc.Name ?? "Unbekannt"; }
-        catch { return "Unbekannt"; }
+        try { return doc.Name ?? "Unbekannt"; } catch { return "Unbekannt"; }
     }
 
     private static void Log(string msg)
     {
-        if (BotConfig.LOG_TO_CONSOLE)
-            Console.WriteLine("[KI-Bot] " + DateTime.Now.ToString("HH:mm:ss") + " " + msg);
+        Console.WriteLine("[KI-Bot] " + DateTime.Now.ToString("HH:mm:ss") + " " + msg);
     }
 
-    private static void ShowMessage(IScriptingHost host, string message, bool isSuccess)
+    private static void ShowStatus(IScriptingHost host, string message, bool isSuccess)
     {
-        try
-        {
-            // Im Script-Kontext: zeigt eine Meldung in der ABBYY Status-Leiste
-            host.MessageWindow.WriteLine(message);
-        }
-        catch { /* Falls MessageWindow nicht verfügbar */ }
+        try { host.MessageWindow.WriteLine(message); } catch { }
     }
 }
