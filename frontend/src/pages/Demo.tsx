@@ -2,7 +2,6 @@ import React, { useRef, useState } from 'react'
 
 const API = 'http://127.0.0.1:3001/api'
 
-// ─── Typen ──────────────────────────────────────────────────────────────────
 interface AnalyzeResult {
   success: boolean
   fields: Record<string, string>
@@ -16,242 +15,208 @@ interface AnalyzeResult {
   error?: string
 }
 
-// ─── Feldnamen auf Deutsch ────────────────────────────────────────────────
-const FIELD_META: { key: string; label: string; icon: string }[] = [
-  { key: 'absender',          label: 'Lieferant',        icon: '🏢' },
-  { key: 'absender_strasse',  label: 'Straße',           icon: '📍' },
-  { key: 'absender_plz',      label: 'PLZ',              icon: '📍' },
-  { key: 'absender_ort',      label: 'Ort',              icon: '📍' },
-  { key: 'absender_land',     label: 'Land',             icon: '🌍' },
-  { key: 'rechnungsnummer',   label: 'Rechnungs-Nr.',    icon: '🔢' },
-  { key: 'rechnungsdatum',    label: 'Rechnungsdatum',   icon: '📅' },
-  { key: 'faelligkeitsdatum', label: 'Fälligkeitsdatum', icon: '⏰' },
-  { key: 'betrag_brutto',     label: 'Brutto-Betrag',    icon: '💶' },
-  { key: 'betrag_netto',      label: 'Netto-Betrag',     icon: '💶' },
-  { key: 'steuerbetrag',      label: 'Steuerbetrag',     icon: '📊' },
-  { key: 'steuersatz',        label: 'Steuersatz',       icon: '📊' },
-  { key: 'waehrung',          label: 'Währung',          icon: '💱' },
-  { key: 'iban',              label: 'IBAN',             icon: '🏦' },
-  { key: 'bic',               label: 'BIC / SWIFT',      icon: '🏦' },
-]
-
-const REQUIRED = ['rechnungsnummer', 'rechnungsdatum', 'betrag_brutto']
-
-// ─── Styles ──────────────────────────────────────────────────────────────────
+// ─── ABBYY-ähnliche Styles ────────────────────────────────────────────────────
 const s: Record<string, React.CSSProperties> = {
-  page: { maxWidth: 900, margin: '0 auto' },
-  hero: {
-    background: 'linear-gradient(135deg, #1a3a5c 0%, #0d2438 100%)',
-    borderRadius: 14,
-    padding: '36px 40px',
-    color: '#fff',
-    marginBottom: 28,
+  shell: {
+    display: 'flex', flexDirection: 'column', height: 'calc(100vh - 120px)',
+    background: '#d4d0c8', fontFamily: '"Segoe UI", Tahoma, Geneva, sans-serif',
+    border: '1px solid #808080', borderRadius: 4, overflow: 'hidden',
+  },
+  toolbar: {
+    background: 'linear-gradient(180deg, #f0ece0 0%, #d8d4c8 100%)',
+    borderBottom: '1px solid #808080', padding: '4px 8px',
+    display: 'flex', alignItems: 'center', gap: 8, fontSize: 12,
+  },
+  toolbarTitle: {
+    fontWeight: 600, color: '#000080', fontSize: 13, marginRight: 16,
+  },
+  statusBar: {
+    background: '#d4d0c8', borderTop: '1px solid #808080',
+    padding: '3px 8px', fontSize: 11, color: '#333',
+    display: 'flex', alignItems: 'center', gap: 16,
+  },
+  body: { display: 'flex', flex: 1, overflow: 'hidden' },
+
+  // Linke Seite: Dokument
+  leftPane: {
+    flex: '0 0 55%', background: '#808080', display: 'flex',
+    flexDirection: 'column', borderRight: '2px solid #606060',
+  },
+  docHeader: {
+    background: '#d4d0c8', borderBottom: '1px solid #808080',
+    padding: '3px 8px', fontSize: 11, color: '#333',
+    display: 'flex', alignItems: 'center', gap: 8,
+  },
+  docViewer: {
+    flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
+    overflow: 'auto', padding: 16,
+  },
+  docPage: {
+    background: '#fff', boxShadow: '2px 2px 8px rgba(0,0,0,0.4)',
+    minHeight: 400, width: '100%', maxWidth: 600,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
     position: 'relative' as const,
-    overflow: 'hidden',
   },
-  heroTitle: { fontSize: 24, fontWeight: 700, margin: 0 },
-  heroSub: { fontSize: 14, color: 'rgba(255,255,255,0.65)', marginTop: 6 },
-  heroBadge: {
-    position: 'absolute' as const, top: 20, right: 20,
-    background: 'rgba(212,168,67,0.2)', border: '1px solid #d4a843',
-    borderRadius: 20, padding: '4px 14px', fontSize: 12, color: '#d4a843', fontWeight: 600,
+
+  // Rechte Seite: Felder
+  rightPane: {
+    flex: 1, display: 'flex', flexDirection: 'column',
+    background: '#d4d0c8', overflow: 'hidden',
   },
-  uploadZone: {
-    border: '2px dashed #cbd5e1',
-    borderRadius: 12,
-    padding: '48px 24px',
-    textAlign: 'center' as const,
-    cursor: 'pointer',
-    transition: 'all 0.2s',
-    background: '#f8fafc',
-    marginBottom: 24,
+  formScroll: { flex: 1, overflowY: 'auto' as const, padding: 6 },
+
+  // Sektionen
+  section: { marginBottom: 4 },
+  sectionHeader: {
+    background: 'linear-gradient(180deg, #316ac5 0%, #1a4a9c 100%)',
+    color: '#fff', padding: '2px 8px', fontSize: 11, fontWeight: 600,
+    cursor: 'pointer', userSelect: 'none' as const,
+    display: 'flex', alignItems: 'center', gap: 4,
   },
-  uploadZoneActive: { borderColor: '#1a3a5c', background: '#eff6ff' },
-  uploadIcon: { fontSize: 48, marginBottom: 12 },
-  uploadText: { fontSize: 16, fontWeight: 600, color: '#1a3a5c' },
-  uploadSub: { fontSize: 13, color: '#6b7280', marginTop: 6 },
-  btn: {
-    padding: '12px 28px', borderRadius: 8, border: 'none',
-    background: '#1a3a5c', color: '#fff', fontWeight: 600,
-    fontSize: 14, cursor: 'pointer', display: 'inline-block',
-    marginTop: 16,
+  sectionBody: {
+    background: '#f0ece0', border: '1px solid #808080',
+    borderTop: 'none', padding: '6px 8px',
   },
-  btnDisabled: { opacity: 0.5, cursor: 'not-allowed' },
-  card: {
-    background: '#fff', border: '1px solid #e5e7eb',
-    borderRadius: 12, overflow: 'hidden', marginBottom: 20,
-  },
-  cardHead: {
-    padding: '14px 20px', background: '#f9fafb',
-    borderBottom: '1px solid #e5e7eb', fontWeight: 600,
-    fontSize: 14, color: '#1a3a5c', display: 'flex',
-    alignItems: 'center', justifyContent: 'space-between',
-  },
-  cardBody: { padding: 20 },
-  decisionGreen: {
-    background: '#f0fdf4', border: '1px solid #86efac',
-    borderRadius: 10, padding: '20px 24px', marginBottom: 20,
-    display: 'flex', alignItems: 'flex-start', gap: 16,
-  },
-  decisionYellow: {
-    background: '#fffbeb', border: '1px solid #fcd34d',
-    borderRadius: 10, padding: '20px 24px', marginBottom: 20,
-    display: 'flex', alignItems: 'flex-start', gap: 16,
-  },
-  decisionRed: {
-    background: '#fef2f2', border: '1px solid #fca5a5',
-    borderRadius: 10, padding: '20px 24px', marginBottom: 20,
-    display: 'flex', alignItems: 'flex-start', gap: 16,
-  },
-  decisionIcon: { fontSize: 40, flexShrink: 0 },
-  decisionTitle: { fontSize: 18, fontWeight: 700 },
-  decisionText: { fontSize: 13, marginTop: 4, lineHeight: 1.6 },
-  fieldGrid: {
-    display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12,
-  },
-  fieldRow: {
-    display: 'flex', flexDirection: 'column' as const, gap: 4,
-  },
-  fieldLabel: { fontSize: 11, color: '#6b7280', fontWeight: 600, textTransform: 'uppercase' as const, letterSpacing: '0.05em' },
-  fieldValue: {
-    fontSize: 14, color: '#111', background: '#f9fafb',
-    border: '1px solid #e5e7eb', borderRadius: 6,
-    padding: '8px 12px', fontFamily: 'monospace',
-  },
-  fieldValueMissing: {
-    fontSize: 14, color: '#9ca3af', background: '#f9fafb',
-    border: '1px dashed #e5e7eb', borderRadius: 6,
-    padding: '8px 12px', fontStyle: 'italic',
-  },
-  fieldValueRequired: {
-    border: '1px solid #fca5a5', background: '#fef2f2',
-  },
-  pillGreen: {
-    display: 'inline-block', padding: '2px 10px', borderRadius: 12,
-    background: '#dcfce7', color: '#16a34a', fontSize: 12, fontWeight: 600,
-  },
-  pillRed: {
-    display: 'inline-block', padding: '2px 10px', borderRadius: 12,
-    background: '#fef2f2', color: '#dc2626', fontSize: 12, fontWeight: 600,
-  },
-  pillYellow: {
-    display: 'inline-block', padding: '2px 10px', borderRadius: 12,
-    background: '#fef9c3', color: '#b45309', fontSize: 12, fontWeight: 600,
-  },
-  meter: {
-    height: 10, borderRadius: 5, background: '#e5e7eb', overflow: 'hidden', marginTop: 4,
-  },
-  meterFill: { height: '100%', borderRadius: 5, transition: 'width 0.6s ease' },
-  abbyyPreview: {
-    border: '2px solid #1a3a5c', borderRadius: 10, overflow: 'hidden',
+
+  // Formularzeilen
+  row: { display: 'flex', alignItems: 'center', marginBottom: 4, gap: 4 },
+  label: { fontSize: 11, color: '#333', minWidth: 90, flexShrink: 0 },
+  labelSmall: { fontSize: 11, color: '#333', minWidth: 60, flexShrink: 0 },
+
+  // Eingabefelder
+  input: {
+    flex: 1, height: 20, fontSize: 11, border: '1px solid #7a7a7a',
+    background: '#fff', padding: '0 4px', outline: 'none',
     fontFamily: '"Segoe UI", Tahoma, sans-serif',
   },
-  abbyyTitle: {
-    background: '#1a3a5c', color: '#fff', padding: '8px 16px',
-    fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8,
+  inputFilled: {
+    flex: 1, height: 20, fontSize: 11, border: '1px solid #7a7a7a',
+    background: '#ffffc0', padding: '0 4px', outline: 'none',
+    fontFamily: '"Segoe UI", Tahoma, sans-serif',
   },
-  abbyyBody: { background: '#fff', padding: 0 },
-  abbyyRow: {
-    display: 'grid', gridTemplateColumns: '180px 1fr',
-    borderBottom: '1px solid #f3f4f6',
+  inputRequired: {
+    flex: 1, height: 20, fontSize: 11,
+    border: '2px solid #cc0000', background: '#ffe0e0',
+    padding: '0 4px', outline: 'none',
+    fontFamily: '"Segoe UI", Tahoma, sans-serif',
   },
-  abbyyRowLast: {
-    display: 'grid', gridTemplateColumns: '180px 1fr',
+  inputSmall: {
+    width: 60, height: 20, fontSize: 11, border: '1px solid #7a7a7a',
+    background: '#fff', padding: '0 4px', outline: 'none', flexShrink: 0,
+    fontFamily: '"Segoe UI", Tahoma, sans-serif',
   },
-  abbyyKey: {
-    padding: '9px 14px', background: '#f8fafc',
-    fontSize: 13, color: '#374151', fontWeight: 500,
-    borderRight: '1px solid #e5e7eb',
+  inputSmallFilled: {
+    width: 60, height: 20, fontSize: 11, border: '1px solid #7a7a7a',
+    background: '#ffffc0', padding: '0 4px', outline: 'none', flexShrink: 0,
+    fontFamily: '"Segoe UI", Tahoma, sans-serif',
   },
-  abbyyVal: {
-    padding: '9px 14px', fontSize: 13, color: '#111',
-    background: '#fffbf0',
+
+  // Tabelle Positionsdaten
+  posTable: { width: '100%', borderCollapse: 'collapse' as const, fontSize: 10 },
+  posTh: {
+    background: '#316ac5', color: '#fff', padding: '2px 4px',
+    border: '1px solid #808080', textAlign: 'left' as const, fontWeight: 600,
   },
-  abbyyValEmpty: {
-    padding: '9px 14px', fontSize: 13, color: '#9ca3af',
-    background: '#fafafa', fontStyle: 'italic',
+  posTd: {
+    padding: '1px', border: '1px solid #c0c0c0', background: '#fff',
   },
-  spinner: {
-    display: 'inline-block', width: 18, height: 18,
-    border: '3px solid rgba(255,255,255,0.3)',
-    borderTopColor: '#fff', borderRadius: '50%',
-    animation: 'spin 0.8s linear infinite',
+  posTdInput: {
+    width: '100%', height: 18, border: 'none', background: 'transparent',
+    fontSize: 10, padding: '0 2px', outline: 'none',
+  },
+
+  // Upload
+  uploadZone: {
+    border: '2px dashed #808080', background: '#c8c4b8',
+    display: 'flex', flexDirection: 'column' as const,
+    alignItems: 'center', justifyContent: 'center',
+    gap: 8, cursor: 'pointer', flex: 1, margin: 16, borderRadius: 2,
+  },
+  uploadText: { fontSize: 13, color: '#333', fontWeight: 600 },
+  uploadSub: { fontSize: 11, color: '#666' },
+  btn: {
+    background: 'linear-gradient(180deg, #f0ece0 0%, #d0ccc0 100%)',
+    border: '1px solid #808080', padding: '3px 12px', fontSize: 11,
+    cursor: 'pointer', borderRadius: 2, color: '#000',
+  },
+  btnPrimary: {
+    background: 'linear-gradient(180deg, #316ac5 0%, #1a4a9c 100%)',
+    border: '1px solid #1a3a7c', padding: '3px 12px', fontSize: 11,
+    cursor: 'pointer', borderRadius: 2, color: '#fff', fontWeight: 600,
+  },
+  decisionBanner: {
+    padding: '4px 8px', fontSize: 11, fontWeight: 600,
+    display: 'flex', alignItems: 'center', gap: 6,
   },
 }
 
-// ─── Hilfsfunktionen ─────────────────────────────────────────────────────────
-function confColor(c: number) {
-  if (c >= 90) return '#16a34a'
-  if (c >= 70) return '#d97706'
-  return '#dc2626'
+// ─── Hilfsfunktion: Stilwahl je nach Wert ─────────────────────────────────────
+function fieldStyle(value: string | undefined, required = false) {
+  if (value && String(value).trim()) return s.inputFilled
+  if (required) return s.inputRequired
+  return s.input
+}
+function smallFieldStyle(value: string | undefined) {
+  if (value && String(value).trim()) return s.inputSmallFilled
+  return s.inputSmall
 }
 
-function readFileAsText(file: File): Promise<string> {
-  return new Promise((resolve) => {
-    const reader = new FileReader()
-    reader.onload = (e) => resolve((e.target?.result as string) || '')
-    reader.readAsText(file)
-  })
+// ─── Kollapsierbare Sektion ────────────────────────────────────────────────────
+function Section({ title, children, defaultOpen = true }: {
+  title: string; children: React.ReactNode; defaultOpen?: boolean
+}) {
+  const [open, setOpen] = useState(defaultOpen)
+  return (
+    <div style={s.section}>
+      <div style={s.sectionHeader} onClick={() => setOpen(!open)}>
+        <span>{open ? '▼' : '▶'}</span> {title}
+      </div>
+      {open && <div style={s.sectionBody}>{children}</div>}
+    </div>
+  )
 }
 
-async function extractText(file: File): Promise<string> {
-  // For PDF/image files the backend handles OCR; we send raw text for .txt files
-  if (file.type === 'text/plain') return readFileAsText(file)
-  // For all other types, return empty - backend will OCR via existing pipeline
-  return `[Datei: ${file.name}]`
-}
-
-// ─── Hauptkomponente ─────────────────────────────────────────────────────────
+// ─── Hauptkomponente ──────────────────────────────────────────────────────────
 export default function Demo() {
-  const [dragging, setDragging] = useState(false)
   const [file, setFile] = useState<File | null>(null)
+  const [fileUrl, setFileUrl] = useState<string>('')
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<AnalyzeResult | null>(null)
   const [error, setError] = useState('')
+  const [dragging, setDragging] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
-  async function analyze(f: File) {
-    setFile(f)
+  const f = result?.fields || {}
+
+  async function analyze(file: File) {
+    setFile(file)
+    setFileUrl(URL.createObjectURL(file))
     setResult(null)
     setError('')
     setLoading(true)
 
     try {
-      // 1. Upload the document to extract text via the existing pipeline
       const formData = new FormData()
-      formData.append('document', f)
-
+      formData.append('document', file)
       const uploadRes = await fetch(`${API}/documents/upload`, { method: 'POST', body: formData })
       const uploaded = await uploadRes.json()
-
-      if (!uploadRes.ok || (!uploaded.id && !uploaded.document_id)) {
-        throw new Error(uploaded.error || 'Upload fehlgeschlagen')
-      }
+      if (!uploadRes.ok || (!uploaded.id && !uploaded.document_id)) throw new Error(uploaded.error || 'Upload fehlgeschlagen')
 
       const docId = uploaded.id || uploaded.document_id
+      await new Promise(r => setTimeout(r, 2500))
 
-      // 2. Wait briefly for AI processing, then get the document details
-      await new Promise(r => setTimeout(r, 2000))
       const docRes = await fetch(`${API}/documents/${docId}`)
       const doc = await docRes.json()
 
-      // 3. Call bot analyze with available text
-      const ocrText = doc.ai_reasoning || doc.ai_suggestion || `Dokument: ${f.name}`
+      const ocrText = doc.ai_reasoning || doc.ai_suggestion || `Dokument: ${file.name}`
       const existingFields: Record<string, string> = {}
-      if (doc.extracted_fields) {
-        try { Object.assign(existingFields, JSON.parse(doc.extracted_fields)) } catch {}
-      }
+      if (doc.extracted_fields) { try { Object.assign(existingFields, JSON.parse(doc.extracted_fields)) } catch {} }
 
       const analyzeRes = await fetch(`${API}/abbyy/bot/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ocr_text: ocrText,
-          document_name: f.name,
-          existing_fields: existingFields,
-        }),
+        body: JSON.stringify({ ocr_text: ocrText, document_name: file.name, existing_fields: existingFields }),
       })
-
       const data = await analyzeRes.json()
       if (!analyzeRes.ok || !data.success) throw new Error(data.error || 'Analyse fehlgeschlagen')
       setResult(data)
@@ -263,8 +228,7 @@ export default function Demo() {
   }
 
   function onDrop(e: React.DragEvent) {
-    e.preventDefault()
-    setDragging(false)
+    e.preventDefault(); setDragging(false)
     const f = e.dataTransfer.files[0]
     if (f) analyze(f)
   }
@@ -274,196 +238,276 @@ export default function Demo() {
     if (f) analyze(f)
   }
 
-  function reset() {
-    setFile(null)
-    setResult(null)
-    setError('')
-    if (inputRef.current) inputRef.current.value = ''
-  }
-
-  const filledFields = result
-    ? FIELD_META.filter(m => result.fields[m.key] && String(result.fields[m.key]).trim())
-    : []
+  const decisionColor = result?.ampel === 'gruen' ? '#006600' : result?.ampel === 'gelb' ? '#996600' : '#cc0000'
+  const decisionIcon  = result?.ampel === 'gruen' ? '✔' : result?.ampel === 'gelb' ? '⚠' : '✘'
+  const decisionText  = result?.decision === 'auto_complete' ? 'Automatisch abgeschlossen' : 'Manuelle Prüfung erforderlich'
 
   return (
-    <div style={s.page}>
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+    <div style={s.shell}>
+      {/* Toolbar */}
+      <div style={s.toolbar}>
+        <span style={s.toolbarTitle}>ABBYY FlexiCapture 12 — Verification Station (Demo)</span>
+        <button style={s.btn} onClick={() => { setFile(null); setFileUrl(''); setResult(null); setError('') }}>
+          Neues Dokument
+        </button>
+        {result && (
+          <button style={s.btnPrimary}>
+            {result.decision === 'auto_complete' ? '✔ Task schließen' : '⚑ Task abrufen'}
+          </button>
+        )}
+        {result && (
+          <div style={{ ...s.decisionBanner, color: decisionColor, marginLeft: 'auto' }}>
+            {decisionIcon} {decisionText} — Konfidenz: {result.confidence}%
+          </div>
+        )}
+      </div>
 
-      {/* Hero */}
-      <div style={s.hero}>
-        <span style={s.heroBadge}>DEMO-MODUS</span>
-        <div style={s.heroTitle}>🤖 KI-Bot Vorschau</div>
-        <div style={s.heroSub}>
-          Dokument hochladen → KI analysiert → zeigt was in ABBYY FlexiCapture eingetragen würde
+      {/* Body */}
+      <div style={s.body}>
+
+        {/* Linke Seite: Dokumentanzeige */}
+        <div style={s.leftPane}>
+          <div style={s.docHeader}>
+            <span>📄</span>
+            <span>{file ? file.name : 'Kein Dokument geladen'}</span>
+            {file && <span style={{ marginLeft: 'auto', color: '#666' }}>1 / 1</span>}
+          </div>
+
+          <div style={s.docViewer}>
+            {!file && (
+              <div
+                style={{ ...s.uploadZone, ...(dragging ? { borderColor: '#316ac5', background: '#c0d0e8' } : {}) }}
+                onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
+                onDragLeave={() => setDragging(false)}
+                onDrop={onDrop}
+                onClick={() => inputRef.current?.click()}
+              >
+                <span style={{ fontSize: 40 }}>📄</span>
+                <span style={s.uploadText}>Rechnung hier ablegen</span>
+                <span style={s.uploadSub}>PDF, JPG, PNG, TIF</span>
+                <button style={s.btn}>Datei auswählen</button>
+                <input ref={inputRef} type="file" accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff"
+                  style={{ display: 'none' }} onChange={onFileChange} />
+              </div>
+            )}
+
+            {loading && (
+              <div style={{ color: '#fff', textAlign: 'center' as const, padding: 32 }}>
+                <div style={{ fontSize: 32, marginBottom: 12 }}>🔍</div>
+                <div style={{ fontWeight: 600, marginBottom: 8 }}>KI analysiert Dokument...</div>
+                <div style={{ fontSize: 12, opacity: 0.8 }}>OCR → Felderkennung → Lieferantenabgleich</div>
+              </div>
+            )}
+
+            {file && !loading && (
+              <div style={s.docPage}>
+                {file.type === 'application/pdf' ? (
+                  <iframe src={fileUrl} style={{ width: '100%', height: 700, border: 'none' }} title="Dokument" />
+                ) : (
+                  <img src={fileUrl} alt="Dokument" style={{ maxWidth: '100%', maxHeight: 700, display: 'block' }} />
+                )}
+              </div>
+            )}
+          </div>
+
+          {error && (
+            <div style={{ background: '#ffd0d0', border: '1px solid #cc0000', padding: '6px 10px', fontSize: 11, color: '#cc0000' }}>
+              ⚠ {error}
+            </div>
+          )}
+        </div>
+
+        {/* Rechte Seite: Felder */}
+        <div style={s.rightPane}>
+          {!result && !loading && (
+            <div style={{ padding: 20, color: '#666', fontSize: 12, textAlign: 'center' as const, marginTop: 40 }}>
+              Lade ein Dokument, um die erkannten Felder zu sehen.
+            </div>
+          )}
+
+          {loading && (
+            <div style={{ padding: 20, color: '#333', fontSize: 12, textAlign: 'center' as const, marginTop: 40 }}>
+              Felder werden erkannt...
+            </div>
+          )}
+
+          {result && !loading && (
+            <div style={s.formScroll}>
+
+              {/* Rechnungstyp */}
+              <div style={{ ...s.sectionBody, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ ...s.label, minWidth: 70 }}>Rechnungstyp</span>
+                <select style={{ ...s.input, flex: '0 0 120px', height: 22 }}>
+                  <option>{f.doc_type || result.doc_type || 'Rechnung'}</option>
+                  <option>Gutschrift</option>
+                  <option>Mahnung</option>
+                </select>
+              </div>
+
+              {/* Lieferant */}
+              <Section title="Lieferant">
+                <div style={s.row}>
+                  <span style={s.label}>Suchen...</span>
+                  <input style={{ ...s.input, flex: '0 0 50px' }} readOnly value={f.lieferant_id || ''} placeholder="ID" />
+                </div>
+                <div style={s.row}>
+                  <span style={s.label}>Name</span>
+                  <input style={fieldStyle(f.absender)} readOnly value={f.absender || ''} />
+                </div>
+                <div style={s.row}>
+                  <span style={s.label}>Umsatzsteuer ID</span>
+                  <input style={fieldStyle(f.ust_id)} readOnly value={f.ust_id || ''} />
+                  <span style={{ ...s.labelSmall, marginLeft: 4 }}>Steuernummer</span>
+                  <input style={{ ...fieldStyle(f.steuernummer), flex: '0 0 90px' }} readOnly value={f.steuernummer || ''} />
+                </div>
+                <div style={s.row}>
+                  <span style={s.label}>Straße</span>
+                  <input style={fieldStyle(f.absender_strasse)} readOnly value={f.absender_strasse || ''} />
+                </div>
+                <div style={s.row}>
+                  <span style={s.label}>PLZ</span>
+                  <input style={{ ...fieldStyle(f.absender_plz), flex: '0 0 60px' }} readOnly value={f.absender_plz || ''} />
+                  <span style={{ ...s.labelSmall, marginLeft: 4 }}>Ort</span>
+                  <input style={fieldStyle(f.absender_ort)} readOnly value={f.absender_ort || ''} />
+                  <span style={{ ...s.labelSmall, marginLeft: 4, minWidth: 30 }}>Land</span>
+                  <input style={{ ...fieldStyle(f.absender_land), flex: '0 0 40px' }} readOnly value={f.absender_land || 'DE'} />
+                </div>
+                <div style={s.row}>
+                  <span style={s.label}>IBAN</span>
+                  <input style={fieldStyle(f.iban)} readOnly value={f.iban || ''} />
+                </div>
+                <div style={s.row}>
+                  <span style={s.label}>Bankkonto</span>
+                  <input style={fieldStyle(f.bankkonto)} readOnly value={f.bankkonto || ''} />
+                  <span style={{ ...s.labelSmall, marginLeft: 4 }}>Bankleitzahl</span>
+                  <input style={fieldStyle(f.bic)} readOnly value={f.bic || ''} />
+                </div>
+              </Section>
+
+              {/* Rechnungsdaten */}
+              <Section title="Rechnungsdaten">
+                <div style={s.row}>
+                  <span style={s.label}>Rechnungsnummer</span>
+                  <input style={fieldStyle(f.rechnungsnummer, true)} readOnly value={f.rechnungsnummer || ''} />
+                  <span style={{ ...s.labelSmall, marginLeft: 4 }}>Rechnungsdatum</span>
+                  <input style={fieldStyle(f.rechnungsdatum, true)} readOnly value={f.rechnungsdatum || ''} />
+                </div>
+                <div style={s.row}>
+                  <span style={s.label}>Fälligkeitsdatum</span>
+                  <input style={fieldStyle(f.faelligkeitsdatum)} readOnly value={f.faelligkeitsdatum || ''} />
+                </div>
+              </Section>
+
+              {/* Sonstige Daten */}
+              <Section title="Sonstige Daten" defaultOpen={false}>
+                <div style={s.row}>
+                  <span style={s.label}>Kein</span>
+                </div>
+              </Section>
+
+              {/* Beträge */}
+              <Section title="Beträge">
+                <div style={{ ...s.row, marginBottom: 6 }}>
+                  <input type="checkbox" style={{ marginRight: 4 }} readOnly />
+                  <span style={{ fontSize: 11 }}>Reversed Charge</span>
+                </div>
+                <div style={s.row}>
+                  <span style={s.label}>Bruttogesamtbetrag</span>
+                  <input style={fieldStyle(f.betrag_brutto, true)} readOnly value={f.betrag_brutto || ''} />
+                  <span style={{ ...s.labelSmall, marginLeft: 4, minWidth: 40 }}>Währung</span>
+                  <input style={{ ...fieldStyle(f.waehrung), flex: '0 0 50px' }} readOnly value={f.waehrung || 'EUR'} />
+                </div>
+              </Section>
+
+              {/* Weitere Beträge */}
+              <Section title="Weitere Beträge">
+                <div style={s.row}>
+                  <span style={s.label}>Nettobetrag</span>
+                  <input style={fieldStyle(f.betrag_netto)} readOnly value={f.betrag_netto || ''} />
+                </div>
+                <div style={s.row}>
+                  <span style={s.label}>Nettobetrag 1</span>
+                  <input style={fieldStyle(f.betrag_netto)} readOnly value={f.betrag_netto || ''} />
+                  <span style={{ ...s.labelSmall, marginLeft: 4 }}>Steuerbetrag 1</span>
+                  <input style={smallFieldStyle(f.steuerbetrag)} readOnly value={f.steuerbetrag || ''} />
+                  <span style={{ ...s.labelSmall, marginLeft: 4, minWidth: 50 }}>Steuersatz 1</span>
+                  <input style={smallFieldStyle(f.steuersatz)} readOnly value={f.steuersatz || ''} />
+                </div>
+                <div style={s.row}>
+                  <span style={s.label}>Nettobetrag 2</span>
+                  <input style={s.input} readOnly value="" />
+                  <span style={{ ...s.labelSmall, marginLeft: 4 }}>Steuerbetrag 2</span>
+                  <input style={s.inputSmall} readOnly value="" />
+                  <span style={{ ...s.labelSmall, marginLeft: 4, minWidth: 50 }}>Steuersatz 2</span>
+                  <input style={s.inputSmall} readOnly value="" />
+                </div>
+                <div style={s.row}>
+                  <span style={s.label}>Nettogesamtbetrag</span>
+                  <input style={fieldStyle(f.betrag_netto)} readOnly value={f.betrag_netto || '0,00'} />
+                  <span style={{ ...s.labelSmall, marginLeft: 4 }}>Steuergesamtbetrag</span>
+                  <input style={fieldStyle(f.steuerbetrag)} readOnly value={f.steuerbetrag || '0,00'} />
+                </div>
+              </Section>
+
+              {/* Positionsdaten */}
+              <Section title="Positionsdaten" defaultOpen={false}>
+                <table style={s.posTable}>
+                  <thead>
+                    <tr>
+                      {['Description','Quantity','Unit','Unit price','Discount','Total netto','VAT %','Currency'].map(h => (
+                        <th key={h} style={s.posTh}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[0,1,2].map(i => (
+                      <tr key={i}>
+                        {[0,1,2,3,4,5,6,7].map(j => (
+                          <td key={j} style={s.posTd}>
+                            <input style={s.posTdInput} readOnly value={i === 0 && j === 7 ? 'EUR' : ''} />
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </Section>
+
+              {/* KI-Hinweis */}
+              <div style={{
+                background: result.ampel === 'gruen' ? '#e0ffe0' : result.ampel === 'gelb' ? '#fff8e0' : '#ffe0e0',
+                border: `1px solid ${result.ampel === 'gruen' ? '#60c060' : result.ampel === 'gelb' ? '#c0a030' : '#c06060'}`,
+                padding: '6px 10px', marginTop: 6, fontSize: 11, borderRadius: 2,
+              }}>
+                <strong>🤖 KI-Bot:</strong> {result.reason}
+              </div>
+
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Upload */}
-      {!loading && !result && (
-        <>
-          <div
-            style={{ ...s.uploadZone, ...(dragging ? s.uploadZoneActive : {}) }}
-            onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
-            onDragLeave={() => setDragging(false)}
-            onDrop={onDrop}
-            onClick={() => inputRef.current?.click()}
-          >
-            <div style={s.uploadIcon}>📄</div>
-            <div style={s.uploadText}>Rechnung hier ablegen oder klicken</div>
-            <div style={s.uploadSub}>PDF, JPG, PNG, TIF – bis 50 MB</div>
-            <input ref={inputRef} type="file" accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff,.txt"
-              style={{ display: 'none' }} onChange={onFileChange} />
-            <div style={s.btn}>Datei auswählen</div>
-          </div>
-          {error && (
-            <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: 16, color: '#dc2626', fontSize: 13 }}>
-              ⚠️ {error}
-            </div>
-          )}
-        </>
-      )}
-
-      {/* Ladeanzeige */}
-      {loading && (
-        <div style={{ ...s.card, textAlign: 'center' as const, padding: '48px 24px' }}>
-          <div style={{ fontSize: 48, marginBottom: 16 }}>🔍</div>
-          <div style={{ fontSize: 16, fontWeight: 600, color: '#1a3a5c' }}>KI analysiert: {file?.name}</div>
-          <div style={{ fontSize: 13, color: '#6b7280', marginTop: 8 }}>
-            OCR → Feldextraktion → Lieferantenabgleich → Entscheidung...
-          </div>
-          <div style={{ marginTop: 24, display: 'flex', justifyContent: 'center', gap: 8, alignItems: 'center' }}>
-            <div style={{
-              width: 12, height: 12, borderRadius: '50%', background: '#1a3a5c',
-              animation: 'spin 1s linear infinite'
-            }} />
-            <div style={{ fontSize: 13, color: '#6b7280' }}>Bitte warten...</div>
-          </div>
-        </div>
-      )}
-
-      {/* Ergebnis */}
-      {result && !loading && (
-        <>
-          {/* Entscheidungs-Banner */}
-          {result.ampel === 'gruen' && result.decision === 'auto_complete' ? (
-            <div style={s.decisionGreen}>
-              <div style={s.decisionIcon}>✅</div>
-              <div>
-                <div style={{ ...s.decisionTitle, color: '#16a34a' }}>
-                  Automatisch abschließen — kein Sachbearbeiter nötig
-                </div>
-                <div style={{ ...s.decisionText, color: '#166534' }}>{result.reason}</div>
-              </div>
-            </div>
-          ) : result.ampel === 'gelb' ? (
-            <div style={s.decisionYellow}>
-              <div style={s.decisionIcon}>🟡</div>
-              <div>
-                <div style={{ ...s.decisionTitle, color: '#92400e' }}>
-                  Zur manuellen Prüfung — Felder werden vorausgefüllt
-                </div>
-                <div style={{ ...s.decisionText, color: '#78350f' }}>{result.reason}</div>
-              </div>
-            </div>
-          ) : (
-            <div style={s.decisionRed}>
-              <div style={s.decisionIcon}>🔴</div>
-              <div>
-                <div style={{ ...s.decisionTitle, color: '#991b1b' }}>
-                  Manuelle Prüfung erforderlich
-                </div>
-                <div style={{ ...s.decisionText, color: '#7f1d1d' }}>{result.reason}</div>
-              </div>
-            </div>
-          )}
-
-          {/* KPI-Zeile */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 14, marginBottom: 20 }}>
-            {[
-              { label: 'Dokumenttyp', value: result.doc_type || '–' },
-              { label: 'Konfidenz', value: `${result.confidence}%` },
-              { label: 'Lieferant bekannt', value: result.supplier_matched ? (result.supplier_name || 'Ja') : 'Nein' },
-              { label: 'Felder erkannt', value: `${filledFields.length} / ${FIELD_META.length}` },
-            ].map(kpi => (
-              <div key={kpi.label} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '16px 18px' }}>
-                <div style={{ fontSize: 11, color: '#6b7280', fontWeight: 600, textTransform: 'uppercase' as const }}>{kpi.label}</div>
-                <div style={{ fontSize: 20, fontWeight: 700, color: '#1a3a5c', marginTop: 4 }}>{kpi.value}</div>
-              </div>
-            ))}
-          </div>
-
-          {/* Konfidenz-Balken */}
-          <div style={{ ...s.card }}>
-            <div style={s.cardHead}>📊 Analyse-Konfidenz</div>
-            <div style={{ ...s.cardBody }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-                <span style={{ fontSize: 13, color: '#374151' }}>Erkennungsqualität</span>
-                <span style={{ fontWeight: 700, color: confColor(result.confidence) }}>{result.confidence}%</span>
-              </div>
-              <div style={s.meter}>
-                <div style={{ ...s.meterFill, width: `${result.confidence}%`, background: confColor(result.confidence) }} />
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8, fontSize: 11, color: '#9ca3af' }}>
-                <span>0%</span>
-                <span>Schwellenwert (75%)</span>
-                <span>Auto-Abschluss (90%)</span>
-                <span>100%</span>
-              </div>
-            </div>
-          </div>
-
-          {/* ABBYY-Vorschau */}
-          <div style={s.card}>
-            <div style={s.cardHead}>
-              <span>🖥️ So würde ABBYY FlexiCapture ausgefüllt</span>
-              <span style={{ fontSize: 12, color: '#6b7280', fontWeight: 400 }}>
-                {filledFields.length} Felder automatisch befüllt
-              </span>
-            </div>
-            <div style={s.cardBody}>
-              <div style={s.abbyyPreview}>
-                <div style={s.abbyyTitle}>
-                  <span>📄</span>
-                  <span>ABBYY FlexiCapture – Verification Station</span>
-                  <span style={{ marginLeft: 'auto', background: 'rgba(212,168,67,0.3)', padding: '2px 10px', borderRadius: 10, color: '#d4a843', fontSize: 11 }}>
-                    KI-Bot ausgefüllt
-                  </span>
-                </div>
-                <div style={s.abbyyBody}>
-                  {FIELD_META.map((m, i) => {
-                    const val = result.fields[m.key]
-                    const hasVal = val && String(val).trim()
-                    const isReq = REQUIRED.includes(m.key)
-                    const isLast = i === FIELD_META.length - 1
-                    return (
-                      <div key={m.key} style={isLast ? s.abbyyRowLast : s.abbyyRow}>
-                        <div style={s.abbyyKey}>
-                          {m.icon} {m.label}
-                          {isReq && <span style={{ color: '#dc2626', marginLeft: 2 }}>*</span>}
-                        </div>
-                        <div style={hasVal ? s.abbyyVal : s.abbyyValEmpty}>
-                          {hasVal ? String(val) : '(leer — nicht erkannt)'}
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
-              <div style={{ marginTop: 10, fontSize: 12, color: '#9ca3af' }}>
-                * Pflichtfelder
-              </div>
-            </div>
-          </div>
-
-          {/* Neues Dokument */}
-          <div style={{ textAlign: 'center' as const, marginTop: 8, marginBottom: 32 }}>
-            <button style={{ ...s.btn, background: '#f3f4f6', color: '#374151', border: '1px solid #e5e7eb' }}
-              onClick={reset}>
-              ← Neues Dokument testen
-            </button>
-          </div>
-        </>
-      )}
+      {/* Statusleiste */}
+      <div style={s.statusBar}>
+        {result ? (
+          <>
+            <span>Dokument: {file?.name}</span>
+            <span>|</span>
+            <span>Typ: {result.doc_type}</span>
+            <span>|</span>
+            <span>Konfidenz: {result.confidence}%</span>
+            <span>|</span>
+            <span style={{ color: decisionColor, fontWeight: 600 }}>
+              {decisionIcon} {decisionText}
+            </span>
+            <span style={{ marginLeft: 'auto' }}>
+              Gelbe Felder = KI ausgefüllt &nbsp;|&nbsp; Rote Felder = fehlend/leer
+            </span>
+          </>
+        ) : (
+          <span>Bereit — Dokument hochladen um KI-Analyse zu starten</span>
+        )}
+      </div>
     </div>
   )
 }
