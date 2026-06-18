@@ -1,29 +1,18 @@
 import React, { useState, useEffect } from 'react'
 
-/**
- * Nachbau des ABBYY-FlexiCapture-Validierungsformulars ("Overlay").
- * Die grün hinterlegten Felder entsprechen den von der KI extrahierten Werten.
- * Der Benutzer kann sie hier wie in ABBYY prüfen und korrigieren, bevor sie
- * an ABBYY übergeben werden.
- */
-
 export interface AbbyyFields {
-  // Lieferant / Adresse
   absender?: string | null
   absender_strasse?: string | null
   absender_plz?: string | null
   absender_ort?: string | null
   absender_land?: string | null
-  // Bank
   iban?: string | null
   bankkonto?: string | null
-  bic?: string | null // = Bankleitzahl/BIC im ABBYY-Formular
-  // Rechnungsdaten
+  bic?: string | null
   rechnungsnummer?: string | null
   rechnungsdatum?: string | null
   faelligkeitsdatum?: string | null
   einkaeufer?: string | null
-  // Beträge
   reversed_charge?: boolean
   betrag_brutto?: number | string | null
   waehrung?: string | null
@@ -36,64 +25,6 @@ export interface AbbyyFields {
   [key: string]: any
 }
 
-const c = {
-  panel: { background: '#ffffff', border: '1px solid #c8d4e0', borderRadius: 6, fontSize: 12, color: '#1f2937' } as React.CSSProperties,
-  sectionTitle: {
-    display: 'flex', alignItems: 'center', gap: 6,
-    padding: '6px 10px', background: '#eef2f7', borderTop: '1px solid #dbe3ec',
-    fontWeight: 700, fontSize: 11, color: '#334155', textTransform: 'uppercase' as const, letterSpacing: 0.4,
-  } as React.CSSProperties,
-  row: { display: 'flex', gap: 10, padding: '6px 10px', flexWrap: 'wrap' as const } as React.CSSProperties,
-  fieldWrap: (flex: number) => ({ flex, minWidth: 90, display: 'flex', flexDirection: 'column' as const }),
-  fieldLabel: { fontSize: 10, color: '#64748b', marginBottom: 2 } as React.CSSProperties,
-  input: (filled: boolean): React.CSSProperties => ({
-    border: '1px solid #b9d4b9',
-    background: filled ? '#e7f6e7' : '#fbfffb',
-    borderRadius: 3, padding: '4px 7px', fontSize: 12, color: '#14532d',
-    outline: 'none', width: '100%', boxSizing: 'border-box',
-  }),
-  amount: (filled: boolean): React.CSSProperties => ({
-    border: '1px solid #b9d4b9',
-    background: filled ? '#e7f6e7' : '#fbfffb',
-    borderRadius: 3, padding: '4px 7px', fontSize: 12, color: '#14532d',
-    outline: 'none', width: '100%', boxSizing: 'border-box', textAlign: 'right' as const,
-    fontVariantNumeric: 'tabular-nums',
-  }),
-  checkRow: { display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px' } as React.CSSProperties,
-}
-
-function Triangle() {
-  return <span style={{ fontSize: 9, color: '#64748b' }}>▼</span>
-}
-
-function TextField({
-  label, value, onChange, flex = 1, mono = false,
-}: { label: string; value: any; onChange: (v: string) => void; flex?: number; mono?: boolean }) {
-  const str = value == null ? '' : String(value)
-  return (
-    <div style={c.fieldWrap(flex)}>
-      <span style={c.fieldLabel}>{label}</span>
-      <input
-        style={{ ...c.input(str.length > 0), ...(mono ? { fontFamily: 'monospace', letterSpacing: 0.4 } : {}) }}
-        value={str}
-        onChange={(e) => onChange(e.target.value)}
-      />
-    </div>
-  )
-}
-
-function AmountField({
-  label, value, onChange, flex = 1,
-}: { label: string; value: any; onChange: (v: string) => void; flex?: number }) {
-  const str = value == null ? '' : String(value)
-  return (
-    <div style={c.fieldWrap(flex)}>
-      <span style={c.fieldLabel}>{label}</span>
-      <input style={c.amount(str.length > 0)} value={str} onChange={(e) => onChange(e.target.value)} />
-    </div>
-  )
-}
-
 interface Props {
   fields: AbbyyFields
   onSave: (fields: AbbyyFields) => Promise<void> | void
@@ -102,6 +33,177 @@ interface Props {
   forwarding?: boolean
 }
 
+// ─── ABBYY-Stil (Windows-Look wie FlexiCapture) ───────────────────────────────
+const a: Record<string, React.CSSProperties> = {
+  panel: {
+    border: '2px solid #4a6fa5',
+    borderRadius: 3,
+    fontFamily: '"Segoe UI", Tahoma, Geneva, sans-serif',
+    fontSize: 12,
+    background: '#d4d0c8',
+    overflow: 'hidden',
+  },
+  titleBar: {
+    background: 'linear-gradient(180deg, #316ac5 0%, #1a4a9c 100%)',
+    color: '#fff',
+    padding: '4px 10px',
+    fontWeight: 700,
+    fontSize: 12,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+  },
+  sectionHeader: {
+    background: 'linear-gradient(180deg, #4a7ac8 0%, #2a5aac 100%)',
+    color: '#fff',
+    padding: '3px 8px',
+    fontWeight: 600,
+    fontSize: 11,
+    cursor: 'pointer',
+    userSelect: 'none' as const,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 4,
+    borderTop: '1px solid #3a6ab8',
+  },
+  sectionBody: {
+    background: '#f0ece0',
+    padding: '5px 8px',
+    borderBottom: '1px solid #b0a898',
+  },
+  row: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 4,
+    marginBottom: 4,
+  },
+  label: {
+    fontSize: 11,
+    color: '#333',
+    flexShrink: 0,
+    minWidth: 90,
+  },
+  labelNarrow: {
+    fontSize: 11,
+    color: '#333',
+    flexShrink: 0,
+    minWidth: 60,
+  },
+  input: (filled: boolean, required = false): React.CSSProperties => ({
+    flex: 1,
+    height: 20,
+    fontSize: 11,
+    border: required && !filled ? '2px solid #cc0000' : '1px solid #7a7a7a',
+    background: filled ? '#ffffc0' : required ? '#ffe0e0' : '#fff',
+    padding: '0 4px',
+    outline: 'none',
+    fontFamily: '"Segoe UI", Tahoma, sans-serif',
+    color: '#000',
+    borderRadius: 0,
+  }),
+  inputFixed: (filled: boolean, width: number): React.CSSProperties => ({
+    width,
+    flexShrink: 0,
+    height: 20,
+    fontSize: 11,
+    border: '1px solid #7a7a7a',
+    background: filled ? '#ffffc0' : '#fff',
+    padding: '0 4px',
+    outline: 'none',
+    fontFamily: '"Segoe UI", Tahoma, sans-serif',
+    color: '#000',
+    borderRadius: 0,
+  }),
+  footer: {
+    background: '#d4d0c8',
+    borderTop: '2px solid #b0a898',
+    padding: '6px 8px',
+    display: 'flex',
+    gap: 6,
+  },
+  btn: (primary: boolean, disabled: boolean): React.CSSProperties => ({
+    flex: 1,
+    padding: '4px 8px',
+    fontSize: 11,
+    fontWeight: 600,
+    border: disabled ? '1px solid #a0a0a0' : '1px solid #4a6fa5',
+    background: disabled
+      ? '#d0d0d0'
+      : primary
+        ? 'linear-gradient(180deg, #316ac5 0%, #1a4a9c 100%)'
+        : 'linear-gradient(180deg, #f0ece0 0%, #d8d4c8 100%)',
+    color: disabled ? '#888' : primary ? '#fff' : '#000',
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    borderRadius: 2,
+  }),
+  legend: {
+    display: 'flex',
+    gap: 12,
+    padding: '4px 8px',
+    background: '#e8e4d8',
+    borderTop: '1px solid #c0b8a8',
+    fontSize: 10,
+    color: '#555',
+    alignItems: 'center',
+  },
+  legendDot: (color: string): React.CSSProperties => ({
+    display: 'inline-block',
+    width: 12,
+    height: 10,
+    background: color,
+    border: '1px solid #888',
+    marginRight: 3,
+    verticalAlign: 'middle',
+  }),
+}
+
+// ─── Kollapsierbare Sektion ────────────────────────────────────────────────────
+function Section({ title, children, defaultOpen = true }: {
+  title: string; children: React.ReactNode; defaultOpen?: boolean
+}) {
+  const [open, setOpen] = useState(defaultOpen)
+  return (
+    <>
+      <div style={a.sectionHeader} onClick={() => setOpen(o => !o)}>
+        <span>{open ? '▼' : '▶'}</span> {title}
+      </div>
+      {open && <div style={a.sectionBody}>{children}</div>}
+    </>
+  )
+}
+
+// ─── Eingabefeld ──────────────────────────────────────────────────────────────
+function F({
+  label, value, onChange, required = false, width, narrow = false,
+}: {
+  label: string; value: any; onChange: (v: string) => void;
+  required?: boolean; width?: number; narrow?: boolean;
+}) {
+  const str = value == null ? '' : String(value)
+  const filled = str.trim().length > 0
+  return (
+    <>
+      <span style={narrow ? a.labelNarrow : a.label}>{label}{required && <span style={{ color: '#cc0000' }}>*</span>}</span>
+      <input
+        style={width ? a.inputFixed(filled, width) : a.input(filled, required)}
+        value={str}
+        onChange={e => onChange(e.target.value)}
+      />
+    </>
+  )
+}
+
+function Spinner() {
+  return (
+    <span style={{
+      display: 'inline-block', width: 11, height: 11,
+      border: '2px solid rgba(255,255,255,0.4)', borderTopColor: '#fff',
+      borderRadius: '50%', animation: 'spin 0.7s linear infinite',
+    }} />
+  )
+}
+
+// ─── Hauptkomponente ──────────────────────────────────────────────────────────
 export default function AbbyyOverlay({ fields, onSave, onForward, saving, forwarding }: Props) {
   const [f, setF] = useState<AbbyyFields>(fields)
   const [dirty, setDirty] = useState(false)
@@ -109,128 +211,108 @@ export default function AbbyyOverlay({ fields, onSave, onForward, saving, forwar
   useEffect(() => { setF(fields); setDirty(false) }, [fields])
 
   const set = (key: keyof AbbyyFields, value: any) => {
-    setF((prev) => ({ ...prev, [key]: value }))
+    setF(prev => ({ ...prev, [key]: value }))
     setDirty(true)
   }
 
   return (
-    <div style={c.panel}>
-      <div style={{ padding: '8px 10px', background: '#1a3a5c', color: '#fff', fontWeight: 700, fontSize: 12, borderRadius: '6px 6px 0 0' }}>
-        ABBYY-Formular · Validierung
+    <div style={a.panel}>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+
+      <div style={a.titleBar}>
+        🖥 ABBYY FlexiCapture — Felder prüfen &amp; korrigieren
       </div>
 
-      {/* Adresse */}
-      <div style={c.sectionTitle}><Triangle /> Lieferant / Adresse</div>
-      <div style={c.row}>
-        <TextField label="Lieferant" value={f.absender} onChange={(v) => set('absender', v)} flex={3} />
-      </div>
-      <div style={c.row}>
-        <TextField label="Straße" value={f.absender_strasse} onChange={(v) => set('absender_strasse', v)} flex={3} />
-      </div>
-      <div style={c.row}>
-        <TextField label="PLZ" value={f.absender_plz} onChange={(v) => set('absender_plz', v)} flex={1} />
-        <TextField label="Ort" value={f.absender_ort} onChange={(v) => set('absender_ort', v)} flex={2} />
-        <TextField label="Land" value={f.absender_land} onChange={(v) => set('absender_land', v)} flex={1} />
-      </div>
-
-      {/* Bank */}
-      <div style={c.sectionTitle}><Triangle /> Bankverbindung</div>
-      <div style={c.row}>
-        <TextField label="IBAN" value={f.iban} onChange={(v) => set('iban', v)} flex={3} mono />
-      </div>
-      <div style={c.row}>
-        <TextField label="Bankkonto" value={f.bankkonto} onChange={(v) => set('bankkonto', v)} flex={2} mono />
-        <TextField label="Bankleitzahl / BIC" value={f.bic} onChange={(v) => set('bic', v)} flex={2} mono />
-      </div>
+      {/* Lieferant */}
+      <Section title="Lieferant">
+        <div style={a.row}>
+          <F label="Name" value={f.absender} onChange={v => set('absender', v)} required />
+        </div>
+        <div style={a.row}>
+          <F label="Straße" value={f.absender_strasse} onChange={v => set('absender_strasse', v)} />
+        </div>
+        <div style={a.row}>
+          <F label="PLZ" value={f.absender_plz} onChange={v => set('absender_plz', v)} width={56} narrow />
+          <F label="Ort" value={f.absender_ort} onChange={v => set('absender_ort', v)} narrow />
+          <F label="Land" value={f.absender_land} onChange={v => set('absender_land', v)} width={36} narrow />
+        </div>
+        <div style={a.row}>
+          <F label="IBAN" value={f.iban} onChange={v => set('iban', v)} />
+        </div>
+        <div style={a.row}>
+          <F label="Bankkonto" value={f.bankkonto} onChange={v => set('bankkonto', v)} />
+          <F label="BIC" value={f.bic} onChange={v => set('bic', v)} width={90} narrow />
+        </div>
+      </Section>
 
       {/* Rechnungsdaten */}
-      <div style={c.sectionTitle}><Triangle /> Rechnungsdaten</div>
-      <div style={c.row}>
-        <TextField label="Rechnungsnummer" value={f.rechnungsnummer} onChange={(v) => set('rechnungsnummer', v)} flex={2} />
-        <TextField label="Rechnungsdatum" value={f.rechnungsdatum} onChange={(v) => set('rechnungsdatum', v)} flex={2} />
-      </div>
-
-      {/* Sonstige Daten */}
-      <div style={c.sectionTitle}><Triangle /> Sonstige Daten</div>
-      <div style={c.row}>
-        <TextField label="Fälligkeitsdatum" value={f.faelligkeitsdatum} onChange={(v) => set('faelligkeitsdatum', v)} flex={2} />
-        <TextField label="Einkäufer" value={f.einkaeufer} onChange={(v) => set('einkaeufer', v)} flex={2} />
-      </div>
+      <Section title="Rechnungsdaten">
+        <div style={a.row}>
+          <F label="Rechnungs-Nr." value={f.rechnungsnummer} onChange={v => set('rechnungsnummer', v)} required />
+          <F label="Datum" value={f.rechnungsdatum} onChange={v => set('rechnungsdatum', v)} required narrow />
+        </div>
+        <div style={a.row}>
+          <F label="Fälligkeit" value={f.faelligkeitsdatum} onChange={v => set('faelligkeitsdatum', v)} />
+          <F label="Einkäufer" value={f.einkaeufer} onChange={v => set('einkaeufer', v)} narrow />
+        </div>
+      </Section>
 
       {/* Beträge */}
-      <div style={c.sectionTitle}><Triangle /> Beträge</div>
-      <div style={c.checkRow}>
-        <input type="checkbox" checked={!!f.reversed_charge} onChange={(e) => set('reversed_charge', e.target.checked)} />
-        <span style={{ fontSize: 11, color: '#475569' }}>Reversed Charge</span>
-      </div>
-      <div style={c.row}>
-        <AmountField label="Bruttogesamtbetrag" value={f.betrag_brutto} onChange={(v) => set('betrag_brutto', v)} flex={2} />
-        <TextField label="Währung" value={f.waehrung} onChange={(v) => set('waehrung', v)} flex={1} />
-      </div>
+      <Section title="Beträge">
+        <div style={{ ...a.row, marginBottom: 5 }}>
+          <input type="checkbox" checked={!!f.reversed_charge} onChange={e => set('reversed_charge', e.target.checked)} />
+          <span style={{ fontSize: 11, marginLeft: 2 }}>Reversed Charge</span>
+        </div>
+        <div style={a.row}>
+          <F label="Brutto" value={f.betrag_brutto} onChange={v => set('betrag_brutto', v)} required />
+          <F label="Währung" value={f.waehrung ?? 'EUR'} onChange={v => set('waehrung', v)} width={46} narrow />
+        </div>
+      </Section>
 
       {/* Weitere Beträge */}
-      <div style={c.sectionTitle}><Triangle /> Weitere Beträge</div>
-      <div style={c.row}>
-        <AmountField label="Nettobetrag" value={f.betrag_netto} onChange={(v) => set('betrag_netto', v)} flex={2} />
-        <AmountField label="Steuerbetrag" value={f.steuerbetrag} onChange={(v) => set('steuerbetrag', v)} flex={2} />
-        <TextField label="Steuersatz %" value={f.steuersatz} onChange={(v) => set('steuersatz', v)} flex={1} />
+      <Section title="Weitere Beträge" defaultOpen={false}>
+        <div style={a.row}>
+          <F label="Netto" value={f.betrag_netto} onChange={v => set('betrag_netto', v)} />
+          <F label="Steuer" value={f.steuerbetrag} onChange={v => set('steuerbetrag', v)} narrow />
+          <F label="Satz %" value={f.steuersatz} onChange={v => set('steuersatz', v)} width={42} narrow />
+        </div>
+        <div style={a.row}>
+          <F label="Netto ges." value={f.nettogesamtbetrag ?? f.betrag_netto} onChange={v => set('nettogesamtbetrag', v)} />
+          <F label="Steuer ges." value={f.steuergesamtbetrag ?? f.steuerbetrag} onChange={v => set('steuergesamtbetrag', v)} narrow />
+        </div>
+        <div style={a.row}>
+          <F label="Referenz" value={f.referenz} onChange={v => set('referenz', v)} />
+        </div>
+      </Section>
+
+      {/* Legende */}
+      <div style={a.legend}>
+        <span><span style={a.legendDot('#ffffc0')} />KI ausgefüllt</span>
+        <span><span style={a.legendDot('#ffe0e0')} />Pflichtfeld leer</span>
+        <span><span style={a.legendDot('#ffffff')} />Nicht erkannt</span>
+        {dirty && <span style={{ marginLeft: 'auto', color: '#996600', fontWeight: 700 }}>● Ungespeicherte Änderungen</span>}
       </div>
 
-      {/* Steuerbeträge gesamt */}
-      <div style={c.sectionTitle}><Triangle /> Weitere Steuerbeträge</div>
-      <div style={c.row}>
-        <AmountField label="Nettogesamtbetrag" value={f.nettogesamtbetrag ?? f.betrag_netto} onChange={(v) => set('nettogesamtbetrag', v)} flex={2} />
-        <AmountField label="Steuergesamtbetrag" value={f.steuergesamtbetrag ?? f.steuerbetrag} onChange={(v) => set('steuergesamtbetrag', v)} flex={2} />
-      </div>
-
-      {/* Referenz */}
-      <div style={c.sectionTitle}><Triangle /> Referenz</div>
-      <div style={c.row}>
-        <TextField label="Referenz" value={f.referenz} onChange={(v) => set('referenz', v)} flex={3} />
-      </div>
-
-      {/* Aktionen */}
-      <div style={{ display: 'flex', gap: 8, padding: 10, borderTop: '1px solid #dbe3ec', background: '#f8fafc', borderRadius: '0 0 6px 6px' }}>
+      {/* Buttons */}
+      <div style={a.footer}>
         <button
           disabled={saving || !dirty}
           onClick={async () => { await onSave(f); setDirty(false) }}
-          style={{
-            flex: 1, padding: '8px 12px', borderRadius: 6, border: 'none', fontWeight: 700, fontSize: 12,
-            cursor: saving || !dirty ? 'not-allowed' : 'pointer',
-            background: saving || !dirty ? '#d1d5db' : '#16a34a', color: '#fff',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-          }}
+          style={a.btn(true, !!(saving || !dirty))}
         >
-          {saving && <Spinner />}
-          {saving ? 'Speichern…' : dirty ? '✓ Felder speichern' : '✓ Gespeichert'}
+          {saving ? <Spinner /> : null} {saving ? 'Speichern…' : dirty ? '✓ Felder speichern' : '✓ Gespeichert'}
         </button>
         {onForward && (
           <button
-            disabled={forwarding || dirty}
+            disabled={!!(forwarding || dirty)}
             onClick={() => onForward()}
             title={dirty ? 'Bitte zuerst speichern' : 'An ABBYY übergeben'}
-            style={{
-              flex: 1, padding: '8px 12px', borderRadius: 6, border: 'none', fontWeight: 700, fontSize: 12,
-              cursor: forwarding || dirty ? 'not-allowed' : 'pointer',
-              background: forwarding || dirty ? '#d1d5db' : '#1a3a5c', color: '#fff',
-              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-            }}
+            style={a.btn(false, !!(forwarding || dirty))}
           >
-            {forwarding && <Spinner />}
-            {forwarding ? 'Übergabe…' : '→ An ABBYY übergeben'}
+            {forwarding ? <Spinner /> : null} {forwarding ? 'Übergabe…' : '→ An ABBYY'}
           </button>
         )}
       </div>
     </div>
-  )
-}
-
-function Spinner() {
-  return (
-    <span style={{
-      display: 'inline-block', width: 12, height: 12,
-      border: '2px solid rgba(255,255,255,0.4)', borderTopColor: '#fff',
-      borderRadius: '50%', animation: 'spin 0.7s linear infinite',
-    }} />
   )
 }
