@@ -197,12 +197,13 @@ export default function Demo() {
 
     try {
       const formData = new FormData()
-      formData.append('document', file)
+      formData.append('file', file)
       const uploadRes = await fetch(`${API}/documents/upload`, { method: 'POST', body: formData })
       const uploaded = await uploadRes.json()
-      if (!uploadRes.ok || (!uploaded.id && !uploaded.document_id)) throw new Error(uploaded.error || 'Upload fehlgeschlagen')
+      if (!uploadRes.ok) throw new Error(uploaded.error || 'Upload fehlgeschlagen')
 
-      const docId = uploaded.id || uploaded.document_id
+      const docId = uploaded.document?.id || uploaded.id || uploaded.document_id
+      if (!docId) throw new Error('Keine Dokument-ID in der Antwort')
       await new Promise(r => setTimeout(r, 2500))
 
       const docRes = await fetch(`${API}/documents/${docId}`)
