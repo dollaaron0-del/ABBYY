@@ -8,6 +8,7 @@ import Suppliers from './pages/Suppliers'
 import Settings from './pages/Settings'
 import Reports from './pages/Reports'
 import BotActivity from './pages/BotActivity'
+import Demo from './pages/Demo'
 
 export default function App() {
   return (
@@ -22,6 +23,7 @@ export default function App() {
           <Route path="einstellungen" element={<Settings />} />
           <Route path="berichte" element={<Reports />} />
           <Route path="bot" element={<BotActivity />} />
+          <Route path="demo" element={<Demo />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>
