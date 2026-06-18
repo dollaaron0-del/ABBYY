@@ -7,6 +7,8 @@ const NAV_ITEMS = [
   { path: '/prüfung', label: 'Manuelle Prüfung', icon: '🔍', exact: false },
   { path: '/lieferanten', label: 'Lieferanten', icon: '🏢', exact: false },
   { path: '/berichte', label: 'Berichte', icon: '📈', exact: false },
+  { path: '/bot', label: 'Bot-Aktivität', icon: '🤖', exact: false },
+  { path: '/demo', label: 'KI-Demo', icon: '🎯', exact: false },
   { path: '/einstellungen', label: 'Einstellungen', icon: '⚙️', exact: false },
 ]
 
