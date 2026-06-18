@@ -1,0 +1,14 @@
+node_modules/
+dist/
+data/*.sqlite*
+data/tessdata/
+uploads/
+*.log
+.env
+backend_stdout.log
+backend_stderr.log
+backend-start.log
+.claude/
+# Tesseract language data (large binaries, downloaded at runtime)
+*.traineddata
+*.traineddata.gz
