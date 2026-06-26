@@ -309,8 +309,8 @@ router.post('/:id/ocr-region', async (req, res) => {
         .run(JSON.stringify(merged), doc.id);
 
       db.prepare(`
-        INSERT INTO bot_corrections (id, document_name, field_name, bot_value, human_value, sender, document_id, region_x, region_y, region_w, region_h)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO bot_corrections (id, document_name, field_name, bot_value, human_value, sender, sender_id, document_id, region_x, region_y, region_w, region_h)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         uuidv4(),
         doc.original_name,
@@ -318,6 +318,7 @@ router.post('/:id/ocr-region', async (req, res) => {
         current[field_name] != null ? String(current[field_name]) : null,
         ocrResult.text,
         doc.sender || null,
+        doc.sender_id || null,
         doc.id,
         region.x, region.y, region.w, region.h
       );
@@ -354,13 +355,41 @@ router.put('/:id/fields', (req, res) => {
     db.prepare('UPDATE documents SET extracted_fields = ? WHERE id = ?')
       .run(JSON.stringify(merged), req.params.id);
 
-    // Log each changed field into bot_corrections for learning
+    // field_sources aktualisieren: geänderte Felder als "manuell" markieren
+    let currentSources = {};
+    try { currentSources = doc.field_sources ? (typeof doc.field_sources === 'string' ? JSON.parse(doc.field_sources) : doc.field_sources) : {}; } catch (_) {}
+    for (const [field, value] of Object.entries(fields)) {
+      if (typeof value === 'object' && value !== null) continue;
+      const oldVal = current[field] != null ? String(current[field]) : null;
+      const newVal = value != null ? String(value) : null;
+      if (oldVal !== newVal && newVal !== null && newVal !== '') currentSources[field] = 'manuell';
+    }
+    db.prepare('UPDATE documents SET field_sources = ? WHERE id = ?').run(JSON.stringify(currentSources), req.params.id);
+
+    // Besten verfügbaren Absendernamen für Lernzwecke ermitteln.
+    // Priorität: 1. Neu eingetragener absender/lieferant_name in diesem Speichervorgang
+    //            2. Bestehender doc.sender
+    // Zeilenumbrüche und Adressteile (nach erstem Komma + PLZ) werden entfernt.
+    function cleanSender(raw) {
+      if (!raw) return null;
+      let s = String(raw).replace(/[\n\r\t]+/g, ' ').replace(/\s+/g, ' ').trim();
+      // Wenn voll Adresse (z.B. "Firma GmbH, Musterstr. 1, 12345 Stadt") → nur Firmenteil
+      const addrMatch = s.match(/^(.+?),\s*\d{5}/);
+      if (addrMatch) s = addrMatch[1].trim();
+      return s.slice(0, 120) || null;
+    }
+    const newSenderFromFields = fields.absender || fields.lieferant_name || null;
+    const effectiveSender = cleanSender(newSenderFromFields) || cleanSender(doc.sender);
+
+    // Log each changed primitive field into bot_corrections for learning
+    // Arrays/objects (e.g. positionen) are stored in extracted_fields but not logged here
     const insertCorrection = db.prepare(`
-      INSERT INTO bot_corrections (id, document_name, field_name, bot_value, human_value, sender, document_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO bot_corrections (id, document_name, field_name, bot_value, human_value, sender, sender_id, document_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const runInserts = db.transaction(() => {
       for (const [field, value] of Object.entries(fields)) {
+        if (typeof value === 'object' && value !== null) continue; // skip arrays/objects
         const oldVal = current[field] != null ? String(current[field]) : null;
         const newVal = value != null ? String(value) : null;
         if (oldVal !== newVal && newVal !== null && newVal !== '') {
@@ -370,7 +399,8 @@ router.put('/:id/fields', (req, res) => {
             field,
             oldVal,
             newVal,
-            doc.sender || null,
+            effectiveSender,
+            doc.sender_id || null,
             doc.id
           );
         }
@@ -436,6 +466,33 @@ router.patch('/:id', (req, res) => {
     if (status !== undefined) {
       updates.push('status = ?');
       params.push(status);
+    }
+
+    // Auto-Alias: Wenn Absender korrigiert wird, alten KI-Wert als Alias speichern
+    if (sender !== undefined && doc.sender && doc.sender !== sender && sender.trim()) {
+      const { matchSupplier } = require('../services/supplierMatchingService');
+      const match = matchSupplier(sender);
+
+      if (match.matched) {
+        updates.push('sender_id = ?');
+        params.push(match.supplier_id);
+        updates.push('sender_matched = ?');
+        params.push(1);
+
+        const oldSender = doc.sender.trim();
+        const supplierRow = db.prepare('SELECT aliases, name FROM suppliers WHERE id = ?').get(match.supplier_id);
+        if (supplierRow && oldSender.toLowerCase() !== supplierRow.name.toLowerCase()) {
+          let aliases = [];
+          try { aliases = JSON.parse(supplierRow.aliases || '[]'); } catch {}
+          const alreadyExists = aliases.some((a) => a.toLowerCase() === oldSender.toLowerCase());
+          if (!alreadyExists) {
+            aliases.push(oldSender);
+            db.prepare('UPDATE suppliers SET aliases = ? WHERE id = ?')
+              .run(JSON.stringify(aliases), match.supplier_id);
+            console.log(`[Auto-Alias] "${oldSender}" → "${supplierRow.name}"`);
+          }
+        }
+      }
     }
 
     if (updates.length === 0) {

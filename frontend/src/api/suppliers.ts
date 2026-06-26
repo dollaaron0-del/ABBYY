@@ -24,19 +24,21 @@ export async function getSupplier(id: string): Promise<Supplier> {
   return res.data
 }
 
-export async function createSupplier(data: {
+export interface SupplierFormData {
   name: string
   aliases?: string[]
   category?: string | null
-}): Promise<Supplier> {
+  iban?: string | null
+  vendor_code?: string | null
+  ust_id?: string | null
+}
+
+export async function createSupplier(data: SupplierFormData): Promise<Supplier> {
   const res = await apiClient.post<Supplier>('/suppliers', data)
   return res.data
 }
 
-export async function updateSupplier(
-  id: string,
-  data: { name?: string; aliases?: string[]; category?: string | null }
-): Promise<Supplier> {
+export async function updateSupplier(id: string, data: Partial<SupplierFormData>): Promise<Supplier> {
   const res = await apiClient.put<Supplier>(`/suppliers/${id}`, data)
   return res.data
 }

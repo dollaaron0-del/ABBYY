@@ -194,10 +194,14 @@ function analyzeWithRules(text) {
  * @param {string} text - extracted document text
  * @param {number} threshold - confidence threshold from settings
  */
-function buildPrompt(text, threshold) {
-  const truncated = text.slice(0, 4000);
+function buildPrompt(text, threshold, hints = null) {
+  const truncated = text.slice(0, 8000);
+  const hintsSection = hints
+    ? `\nHINWEISE AUS FRÜHEREN KORREKTUREN FÜR DIESEN LIEFERANTEN:\n${hints}\nBerücksichtige diese Hinweise bevorzugt bei der Feldextraktion.\n`
+    : '';
   return `Du bist ein Experte für die Analyse von Geschäftsdokumenten in einem Hotelbetrieb.
 Analysiere das folgende Dokument und antworte NUR mit einem JSON-Objekt.
+${hintsSection}
 
 WICHTIG ZUM ABSENDER:
 Der Absender ist das Unternehmen, das die Rechnung AUSSTELLT und Geld bekommt
@@ -211,6 +215,13 @@ WICHTIG: "absender" ist IMMER ein Firmenname, z.B. "Nexi Germany GmbH" oder "Foo
 NIEMALS eine Nummer, eine Bezeichnung wie "Lieferscheinnummer", "Bestellnummer",
 "Rechnungsnummer", "Kundennummer", "Weferscheinnummer" oder ähnliches als Absender angeben.
 Wenn kein eindeutiger Firmenname erkennbar ist, setze absender auf null.
+
+TABELLEN UND POSITIONEN:
+Der Text stammt aus OCR und kann Tabellen als unstrukturierten Text enthalten – Spalten
+erscheinen als Leerzeichen-getrennte Werte in einer Zeile. Suche Beträge am ENDE des Textes
+oder nach Schlüsselwörtern wie "Gesamt", "Total", "Summe", "Endbetrag", "zu zahlen".
+Bei mehrseitigen Dokumenten ist der Gesamtbetrag oft auf der letzten Seite ([Seite X]).
+Ignoriere Einzelpositionsbeträge und extrahiere nur den finalen Gesamtbetrag.
 
 Dokumenttext:
 ${truncated}
@@ -346,9 +357,9 @@ function parseAiResponse(responseText) {
 /**
  * Analyze document text using the local Ollama instance.
  */
-async function analyzeWithOllama(text) {
+async function analyzeWithOllama(text, hints = null) {
   const settings = getSettings();
-  const prompt = buildPrompt(text, settings.confidenceThreshold);
+  const prompt = buildPrompt(text, settings.confidenceThreshold, hints);
 
   const os = require('os');
   const cpuCount = Math.max(2, os.cpus().length);
@@ -412,7 +423,7 @@ async function getOllamaModels() {
  * Claude API fallback - ONLY call this when explicitly enabled in settings.
  * WARNING: This sends data outside the company network.
  */
-async function analyzeWithClaude(text) {
+async function analyzeWithClaude(text, hints = null) {
   const settings = getSettings();
 
   if (!settings.claudeEnabled) {
@@ -423,7 +434,7 @@ async function analyzeWithClaude(text) {
     throw new Error('Claude API-Schlüssel ist nicht konfiguriert');
   }
 
-  const prompt = buildPrompt(text, settings.confidenceThreshold);
+  const prompt = buildPrompt(text, settings.confidenceThreshold, hints);
 
   try {
     const response = await axios.post(
@@ -454,10 +465,54 @@ async function analyzeWithClaude(text) {
 }
 
 /**
+ * Lernbeispiele für einen bekannten Absender aus bot_corrections laden.
+ * Sucht sowohl nach Absendertext als auch nach Lieferanten-ID (stabiler).
+ * Gibt einen formatierten Hinweis-String zurück oder null.
+ */
+function loadHintsForSender(senderName, supplierId = null) {
+  if (!senderName && !supplierId) return null;
+  try {
+    let rows;
+    if (supplierId) {
+      // Suche nach sender_id ODER sender-Text – findet Korrekturen auch wenn
+      // der Absendertext beim letzten Upload leicht anders geschrieben wurde
+      rows = db.prepare(`
+        SELECT field_name, human_value, COUNT(*) as count
+        FROM bot_corrections
+        WHERE (sender_id = ? OR (sender = ? AND sender IS NOT NULL))
+          AND human_value IS NOT NULL AND human_value != ''
+        GROUP BY field_name, human_value
+        ORDER BY count DESC
+        LIMIT 10
+      `).all(supplierId, senderName || '');
+    } else {
+      rows = db.prepare(`
+        SELECT field_name, human_value, COUNT(*) as count
+        FROM bot_corrections
+        WHERE sender = ? AND human_value IS NOT NULL AND human_value != ''
+        GROUP BY field_name, human_value
+        ORDER BY count DESC
+        LIMIT 10
+      `).all(senderName);
+    }
+
+    if (rows.length === 0) return null;
+
+    const lines = rows.map((r) => `- ${r.field_name}: "${r.human_value}" (${r.count}× manuell bestätigt)`);
+    return lines.join('\n');
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
  * Main analysis function.
  * Priority: Demo-Modus (regelbasiert) → Ollama → Claude (Fallback, wenn aktiviert).
+ * @param {string} text - OCR-extrahierter Dokumenttext
+ * @param {string|null} senderHint - Bekannter Absendername für Lernbeispiele (optional)
+ * @param {string|null} supplierId - Lieferanten-ID für stabile Korrekturen-Suche (optional)
  */
-async function analyzeDocument(text) {
+async function analyzeDocument(text, senderHint = null, supplierId = null) {
   const settings = getSettings();
 
   if (!text || text.trim().length < 10) {
@@ -476,15 +531,21 @@ async function analyzeDocument(text) {
     return analyzeWithRules(text);
   }
 
+  // Lernbeispiele für bekannten Absender laden (auch per Lieferanten-ID)
+  const hints = loadHintsForSender(senderHint, supplierId);
+  if (hints) {
+    console.log(`[AI] ${hints.split('\n').length} Lernbeispiele für Absender "${senderHint || supplierId}" in Prompt eingebettet`);
+  }
+
   try {
-    return await analyzeWithOllama(text);
+    return await analyzeWithOllama(text, hints);
   } catch (ollamaErr) {
     console.error('Ollama analysis failed:', ollamaErr.message);
 
     if (settings.claudeEnabled && settings.claudeApiKey) {
       console.warn('WARNUNG: Fallback auf Claude API - Daten verlassen das Firmennetzwerk!');
       try {
-        return await analyzeWithClaude(text);
+        return await analyzeWithClaude(text, hints);
       } catch (claudeErr) {
         console.error('Claude fallback also failed:', claudeErr.message);
         throw new Error(`Beide KI-Dienste fehlgeschlagen. Ollama: ${ollamaErr.message}. Claude: ${claudeErr.message}`);

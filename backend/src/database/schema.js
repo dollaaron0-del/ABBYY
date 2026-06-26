@@ -135,9 +135,77 @@ function initializeSchema() {
   try {
     db.exec(`CREATE INDEX IF NOT EXISTS idx_bot_corrections_sender ON bot_corrections(sender)`);
   } catch (_) {}
+  // Feldherkünfte: welche Quelle hat welches extrahierte Feld geliefert
+  try { db.exec(`ALTER TABLE documents ADD COLUMN field_sources TEXT`); } catch (_) {}
+
+  // Migration: sender + sender_id in bot_corrections nachfüllen falls noch null
+  // (betrifft alle Korrekturen die gespeichert wurden bevor doc.sender bekannt war)
+  try {
+    db.exec(`
+      UPDATE bot_corrections
+      SET
+        sender = (
+          SELECT replace(replace(replace(d.sender, char(10), ' '), char(13), ' '), '  ', ' ')
+          FROM documents d WHERE d.id = bot_corrections.document_id
+        ),
+        sender_id = (
+          SELECT d.sender_id FROM documents d WHERE d.id = bot_corrections.document_id
+        )
+      WHERE document_id IS NOT NULL
+        AND (sender IS NULL OR sender = '' OR instr(sender, char(10)) > 0)
+    `);
+  } catch (_) {}
+
+  // sender_id für stabile Lieferantenverknüpfung (unabhängig vom Absendertext)
+  try { db.exec(`ALTER TABLE bot_corrections ADD COLUMN sender_id TEXT`); } catch (_) {}
+  try {
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_bot_corrections_sender_id ON bot_corrections(sender_id)`);
+  } catch (_) {}
 
   // Add field_corrections_applied column to documents (tracks how many learned corrections were auto-applied)
   try { db.exec(`ALTER TABLE documents ADD COLUMN learned_corrections_count INTEGER DEFAULT 0`); } catch (_) {}
+
+  // Hotels / Kostenstellen-Tabelle
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS hotels (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      code TEXT NOT NULL,
+      aliases TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_hotels_code ON hotels(code);
+  `);
+
+  // Lieferanten: Lieferantennummer, IBAN, USt-ID
+  try { db.exec(`ALTER TABLE suppliers ADD COLUMN vendor_code TEXT`); } catch (_) {}
+  try { db.exec(`ALTER TABLE suppliers ADD COLUMN iban TEXT`); } catch (_) {}
+  try { db.exec(`ALTER TABLE suppliers ADD COLUMN ust_id TEXT`); } catch (_) {}
+
+  // Dokumente: Hotel-Zuordnung
+  try { db.exec(`ALTER TABLE documents ADD COLUMN hotel_id TEXT REFERENCES hotels(id)`); } catch (_) {}
+  try { db.exec(`ALTER TABLE documents ADD COLUMN hotel_code TEXT`); } catch (_) {}
+  try { db.exec(`ALTER TABLE documents ADD COLUMN hotel_name TEXT`); } catch (_) {}
+
+  // ABBYY-Lernrückkanal: was wurde an ABBYY geschickt, welche Aufgaben-ID hat ABBYY vergeben
+  try { db.exec(`ALTER TABLE documents ADD COLUMN abbyy_task_id TEXT`); } catch (_) {}
+  try { db.exec(`ALTER TABLE documents ADD COLUMN abbyy_sent_fields TEXT`); } catch (_) {}
+  try { db.exec(`ALTER TABLE documents ADD COLUMN abbyy_learned_at TEXT`); } catch (_) {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_abbyy_task ON documents(abbyy_task_id)`); } catch (_) {}
+
+  // Lieferanten-Sync Einstellungen
+  const syncSettings = [
+    { key: 'abbyy_vendor_sync_url', value: '' },
+    { key: 'abbyy_vendor_sync_interval_hours', value: '0' },
+    { key: 'abbyy_vendor_sync_last', value: '' },
+  ];
+  for (const s of syncSettings) {
+    db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)`).run(s.key, s.value);
+  }
+
+  // OCR-Sprache auf deu+eng aktualisieren falls noch auf alter Einstellung
+  db.prepare(`UPDATE settings SET value = 'deu+eng' WHERE key = 'ocr_language' AND value = 'deu'`).run();
 
   console.log('Database schema initialized successfully.');
 }

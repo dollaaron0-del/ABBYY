@@ -49,6 +49,11 @@ export interface Document {
   user_correction: string | null
   ampel: Ampel
   extracted_fields?: string | null
+  field_sources?: string | null
+  learned_corrections_count?: number
+  hotel_id?: string | null
+  hotel_code?: string | null
+  hotel_name?: string | null
   processed_at: string | null
   created_at: string
   processing_logs?: ProcessingLog[]
@@ -60,6 +65,9 @@ export interface Supplier {
   name: string
   aliases: string[]
   category: string | null
+  iban?: string | null
+  vendor_code?: string | null
+  ust_id?: string | null
   created_at: string
   updated_at: string
 }
@@ -78,6 +86,9 @@ export interface Settings {
   log_level: string
   max_file_size_mb: string
   ocr_language: string
+  abbyy_vendor_sync_url: string
+  abbyy_vendor_sync_interval_hours: string
+  abbyy_vendor_sync_last: string
   [key: string]: string
 }
 

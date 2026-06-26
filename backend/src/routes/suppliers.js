@@ -7,6 +7,7 @@ const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 const ExcelJS = require('exceljs');
 const db = require('../database/db');
+const { invalidateSupplierCache } = require('../services/supplierMatchingService');
 
 const router = express.Router();
 
@@ -95,7 +96,7 @@ router.get('/:id', (req, res) => {
 // POST /api/suppliers - create supplier
 router.post('/', (req, res) => {
   try {
-    const { name, aliases = [], category } = req.body;
+    const { name, aliases = [], category, vendor_code, iban, ust_id } = req.body;
 
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Name ist erforderlich' });
@@ -110,11 +111,12 @@ router.post('/', (req, res) => {
     const aliasesJson = JSON.stringify(Array.isArray(aliases) ? aliases : []);
 
     db.prepare(`
-      INSERT INTO suppliers (id, name, aliases, category)
-      VALUES (?, ?, ?, ?)
-    `).run(id, name.trim(), aliasesJson, category || null);
+      INSERT INTO suppliers (id, name, aliases, category, vendor_code, iban, ust_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(id, name.trim(), aliasesJson, category || null, vendor_code || null, iban || null, ust_id || null);
 
     const created = db.prepare('SELECT * FROM suppliers WHERE id = ?').get(id);
+    invalidateSupplierCache();
     res.status(201).json({ ...created, aliases: JSON.parse(created.aliases) });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -124,12 +126,12 @@ router.post('/', (req, res) => {
 // PUT /api/suppliers/:id - update supplier
 router.put('/:id', (req, res) => {
   try {
-    const { name, aliases, category } = req.body;
-
     const existing = db.prepare('SELECT * FROM suppliers WHERE id = ?').get(req.params.id);
     if (!existing) {
       return res.status(404).json({ error: 'Lieferant nicht gefunden' });
     }
+
+    const { name, aliases, category, vendor_code, iban, ust_id } = req.body;
 
     if (name && name.trim() !== existing.name) {
       const duplicate = db.prepare('SELECT id FROM suppliers WHERE name = ? AND id != ?').get(name.trim(), req.params.id);
@@ -137,18 +139,21 @@ router.put('/:id', (req, res) => {
         return res.status(409).json({ error: 'Lieferant mit diesem Namen existiert bereits' });
       }
     }
-
     const newName = (name && name.trim()) || existing.name;
     const newAliases = aliases !== undefined ? JSON.stringify(Array.isArray(aliases) ? aliases : []) : existing.aliases;
     const newCategory = category !== undefined ? category : existing.category;
+    const newVendorCode = vendor_code !== undefined ? (vendor_code || null) : existing.vendor_code;
+    const newIban = iban !== undefined ? (iban || null) : existing.iban;
+    const newUstId = ust_id !== undefined ? (ust_id || null) : existing.ust_id;
 
     db.prepare(`
       UPDATE suppliers
-      SET name = ?, aliases = ?, category = ?, updated_at = datetime('now')
+      SET name = ?, aliases = ?, category = ?, vendor_code = ?, iban = ?, ust_id = ?, updated_at = datetime('now')
       WHERE id = ?
-    `).run(newName, newAliases, newCategory, req.params.id);
+    `).run(newName, newAliases, newCategory, newVendorCode, newIban, newUstId, req.params.id);
 
     const updated = db.prepare('SELECT * FROM suppliers WHERE id = ?').get(req.params.id);
+    invalidateSupplierCache();
     res.json({ ...updated, aliases: JSON.parse(updated.aliases) });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -165,6 +170,7 @@ router.delete('/:id', (req, res) => {
 
     db.prepare('UPDATE documents SET sender_id = NULL, sender_matched = 0 WHERE sender_id = ?').run(req.params.id);
     db.prepare('DELETE FROM suppliers WHERE id = ?').run(req.params.id);
+    invalidateSupplierCache();
 
     res.json({ message: 'Lieferant gelöscht' });
   } catch (err) {
@@ -194,13 +200,25 @@ router.post('/import', importUpload.single('file'), async (req, res) => {
   try {
     let rows = [];
 
+    // Helper to find a column index by multiple possible header names
+    function colIdx(header, ...names) {
+      for (const n of names) {
+        const i = header.indexOf(n);
+        if (i >= 0) return i;
+      }
+      return -1;
+    }
+
     if (ext === '.csv') {
       const content = fs.readFileSync(filePath, 'utf-8');
       const lines = content.split('\n').filter((l) => l.trim());
       const header = lines[0].split(';').map((h) => h.trim().toLowerCase());
-      const nameIdx = header.indexOf('name') >= 0 ? header.indexOf('name') : 0;
-      const aliasIdx = header.indexOf('aliases') >= 0 ? header.indexOf('aliases') : header.indexOf('aliase');
-      const catIdx = header.indexOf('category') >= 0 ? header.indexOf('category') : header.indexOf('kategorie');
+      const nameIdx = colIdx(header, 'name') >= 0 ? colIdx(header, 'name') : 0;
+      const aliasIdx = colIdx(header, 'aliases', 'aliase');
+      const catIdx = colIdx(header, 'category', 'kategorie');
+      const ibanIdx = colIdx(header, 'iban');
+      const vcIdx = colIdx(header, 'vendor_code', 'lieferantennummer', 'lieferanten_nr', 'kreditorennummer');
+      const ustIdx = colIdx(header, 'ust_id', 'umsatzsteuer_id', 'ustid', 'vat');
 
       for (let i = 1; i < lines.length; i++) {
         const cols = lines[i].split(';').map((c) => c.trim().replace(/^"|"$/g, ''));
@@ -211,7 +229,10 @@ router.post('/import', importUpload.single('file'), async (req, res) => {
         rows.push({
           name: cols[nameIdx],
           aliases,
-          category: catIdx >= 0 ? cols[catIdx] : null,
+          category: catIdx >= 0 ? cols[catIdx] || null : null,
+          iban: ibanIdx >= 0 ? cols[ibanIdx] || null : null,
+          vendor_code: vcIdx >= 0 ? cols[vcIdx] || null : null,
+          ust_id: ustIdx >= 0 ? cols[ustIdx] || null : null,
         });
       }
     } else {
@@ -219,9 +240,12 @@ router.post('/import', importUpload.single('file'), async (req, res) => {
       await workbook.xlsx.readFile(filePath);
       const sheet = workbook.worksheets[0];
       const headerRow = sheet.getRow(1).values.slice(1).map((h) => String(h || '').trim().toLowerCase());
-      const nameIdx = headerRow.indexOf('name') >= 0 ? headerRow.indexOf('name') : 0;
-      const aliasIdx = headerRow.indexOf('aliases') >= 0 ? headerRow.indexOf('aliases') : headerRow.indexOf('aliase');
-      const catIdx = headerRow.indexOf('category') >= 0 ? headerRow.indexOf('category') : headerRow.indexOf('kategorie');
+      const nameIdx = colIdx(headerRow, 'name') >= 0 ? colIdx(headerRow, 'name') : 0;
+      const aliasIdx = colIdx(headerRow, 'aliases', 'aliase');
+      const catIdx = colIdx(headerRow, 'category', 'kategorie');
+      const ibanIdx = colIdx(headerRow, 'iban');
+      const vcIdx = colIdx(headerRow, 'vendor_code', 'lieferantennummer', 'lieferanten_nr', 'kreditorennummer');
+      const ustIdx = colIdx(headerRow, 'ust_id', 'umsatzsteuer_id', 'ustid', 'vat');
 
       sheet.eachRow((row, rowNum) => {
         if (rowNum === 1) return;
@@ -230,17 +254,26 @@ router.post('/import', importUpload.single('file'), async (req, res) => {
         if (!name) return;
         const aliasStr = aliasIdx >= 0 ? String(vals[aliasIdx] || '') : '';
         const aliases = aliasStr ? aliasStr.split(',').map((a) => a.trim()).filter(Boolean) : [];
-        const category = catIdx >= 0 ? String(vals[catIdx] || '') || null : null;
-        rows.push({ name, aliases, category });
+        rows.push({
+          name,
+          aliases,
+          category: catIdx >= 0 ? String(vals[catIdx] || '') || null : null,
+          iban: ibanIdx >= 0 ? String(vals[ibanIdx] || '').replace(/\s+/g, '') || null : null,
+          vendor_code: vcIdx >= 0 ? String(vals[vcIdx] || '') || null : null,
+          ust_id: ustIdx >= 0 ? String(vals[ustIdx] || '') || null : null,
+        });
       });
     }
 
     const insert = db.prepare(`
-      INSERT INTO suppliers (id, name, aliases, category)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO suppliers (id, name, aliases, category, iban, vendor_code, ust_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(name) DO UPDATE SET
         aliases = excluded.aliases,
         category = excluded.category,
+        iban = COALESCE(excluded.iban, suppliers.iban),
+        vendor_code = COALESCE(excluded.vendor_code, suppliers.vendor_code),
+        ust_id = COALESCE(excluded.ust_id, suppliers.ust_id),
         updated_at = datetime('now')
     `);
 
@@ -254,7 +287,7 @@ router.post('/import', importUpload.single('file'), async (req, res) => {
         try {
           const existing = db.prepare('SELECT id FROM suppliers WHERE name = ?').get(row.name);
           const id = existing ? existing.id : uuidv4();
-          insert.run(id, row.name, JSON.stringify(row.aliases), row.category || null);
+          insert.run(id, row.name, JSON.stringify(row.aliases), row.category || null, row.iban || null, row.vendor_code || null, row.ust_id || null);
           if (existing) {
             updated++;
           } else {
@@ -268,6 +301,7 @@ router.post('/import', importUpload.single('file'), async (req, res) => {
     });
 
     runImport();
+    invalidateSupplierCache();
 
     fs.unlink(filePath, () => {});
 
@@ -297,8 +331,11 @@ router.get('/export/excel', async (req, res) => {
     const sheet = workbook.addWorksheet('Lieferanten');
     sheet.columns = [
       { header: 'Name', key: 'name', width: 40 },
-      { header: 'Aliases', key: 'aliases', width: 60 },
-      { header: 'Kategorie', key: 'category', width: 25 },
+      { header: 'Aliases', key: 'aliases', width: 40 },
+      { header: 'Kategorie', key: 'category', width: 20 },
+      { header: 'IBAN', key: 'iban', width: 26 },
+      { header: 'Lieferantennummer', key: 'vendor_code', width: 20 },
+      { header: 'USt_ID', key: 'ust_id', width: 16 },
       { header: 'Erstellt', key: 'created_at', width: 20 },
     ];
 
@@ -315,6 +352,9 @@ router.get('/export/excel', async (req, res) => {
         name: row.name,
         aliases: aliases.join(', '),
         category: row.category || '',
+        iban: row.iban || '',
+        vendor_code: row.vendor_code || '',
+        ust_id: row.ust_id || '',
         created_at: row.created_at,
       });
     }

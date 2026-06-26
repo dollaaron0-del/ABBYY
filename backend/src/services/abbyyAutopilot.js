@@ -112,6 +112,19 @@ function decide(doc, fields, threshold) {
  */
 async function runCycle() {
   if (running) return { skipped: true };
+
+  // Lieferanten-Auto-Sync falls fällig (läuft still im Hintergrund)
+  try {
+    const { autoSyncIfDue } = require('./abbyyVendorSync');
+    autoSyncIfDue().catch(() => {});
+  } catch (_) {}
+
+  // Aus abgeschlossenen ABBYY-Aufgaben lernen (still im Hintergrund)
+  try {
+    const { learnFromCompletedTasks } = require('./abbyyLearning');
+    learnFromCompletedTasks().catch(() => {});
+  } catch (_) {}
+
   const cfg = connector.getConfig();
 
   if (!cfg.autopilotEnabled) return { disabled: true };
@@ -134,8 +147,24 @@ async function runCycle() {
         let aiFields = {};
         try { aiFields = doc.extracted_fields ? JSON.parse(doc.extracted_fields) : {}; } catch (_) {}
 
-        // 2. Korrigieren
+        // 2. Korrigieren + 3-stellige Nummern ergänzen
         const { corrected, corrections } = correctFields(abbyyFields, aiFields);
+
+        // Lieferantennummer und Kostenstelle aus unserem System ergänzen
+        if (doc.sender_id && !corrected.lieferantennummer) {
+          const supplier = db.prepare('SELECT vendor_code FROM suppliers WHERE id = ?').get(doc.sender_id);
+          if (supplier && supplier.vendor_code) {
+            corrected.lieferantennummer = supplier.vendor_code;
+            corrections.push({ field: 'lieferantennummer', from: null, to: supplier.vendor_code, reason: 'Aus Lieferantendatenbank' });
+          }
+        }
+        if (doc.hotel_code && !corrected.kostenstelle) {
+          corrected.kostenstelle = doc.hotel_code;
+          corrections.push({ field: 'kostenstelle', from: null, to: doc.hotel_code, reason: 'Hotel erkannt' });
+        }
+        if (doc.hotel_name && !corrected.hotel_name) {
+          corrected.hotel_name = doc.hotel_name;
+        }
 
         if (corrections.length > 0) {
           await connector.updateDocumentFields(task.documentId, corrected);

@@ -152,6 +152,11 @@ export default function BotActivity() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [refreshing, setRefreshing] = useState(false)
+  const [learnStatus, setLearnStatus] = useState<{ pending: number; learned: number; corrections: number } | null>(null)
+  const [learning, setLearning] = useState(false)
+  const [learnResult, setLearnResult] = useState<string | null>(null)
+  const [importing, setImporting] = useState(false)
+  const [importResult, setImportResult] = useState<string | null>(null)
 
   async function load() {
     try {
@@ -178,7 +183,65 @@ export default function BotActivity() {
   function handleRefresh() {
     setRefreshing(true)
     load()
+    loadLearnStatus()
   }
+
+  async function loadLearnStatus() {
+    try {
+      const r = await fetch(`${API}/abbyy/learn-from-completed/status`)
+      if (!r.ok) return
+      const d = await r.json()
+      setLearnStatus({ pending: d.pending_learning, learned: d.documents_learned, corrections: d.corrections_from_abbyy })
+    } catch (_) {}
+  }
+
+  async function handleLearnNow() {
+    setLearning(true)
+    setLearnResult(null)
+    try {
+      const r = await fetch(`${API}/abbyy/learn-from-completed`, { method: 'POST' })
+      const d = await r.json()
+      if (d.learned > 0) {
+        setLearnResult(`${d.learned} Korrekturen aus ${d.tasks} ABBYY-Aufgaben gelernt`)
+      } else {
+        setLearnResult(d.tasks === 0 ? 'Keine neuen abgeschlossenen Aufgaben in ABBYY gefunden' : 'Keine Änderungen — ABBYY-Felder stimmen mit unseren Werten überein')
+      }
+      load()
+      loadLearnStatus()
+    } catch (e: any) {
+      setLearnResult('Fehler: ' + e.message)
+    } finally {
+      setLearning(false)
+    }
+  }
+
+  async function handleTrainingImport(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setImporting(true)
+    setImportResult(null)
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      const r = await fetch(`${API}/abbyy/import-training`, { method: 'POST', body: form })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d.error || 'Fehler')
+      setImportResult(`${d.saved} Lernkorrekturen aus ${d.records} Dokumenten importiert`)
+      load()
+      loadLearnStatus()
+    } catch (e: any) {
+      setImportResult('Fehler: ' + e.message)
+    } finally {
+      setImporting(false)
+      e.target.value = ''
+    }
+  }
+
+  function downloadTemplate() {
+    window.open(`${API}/abbyy/import-training/template`, '_blank')
+  }
+
+  useEffect(() => { loadLearnStatus() }, [])
 
   const totals = history?.totals
   const maxCount = Math.max(...(history?.correction_stats.map(s => s.count) || [1]), 1)
@@ -195,16 +258,93 @@ export default function BotActivity() {
             Was der KI-Bot in ABBYY automatisch ausgefüllt und korrigiert hat
           </p>
         </div>
-        <button
-          onClick={handleRefresh}
-          disabled={refreshing}
-          style={{
-            padding: '8px 16px', borderRadius: 6, border: '1px solid #e5e7eb',
-            background: '#fff', cursor: 'pointer', fontSize: 13, color: '#374151',
-          }}
-        >
-          {refreshing ? '⟳ Lädt...' : '⟳ Aktualisieren'}
-        </button>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <button
+            onClick={handleLearnNow}
+            disabled={learning}
+            style={{
+              padding: '8px 16px', borderRadius: 6, border: 'none',
+              background: learning ? '#9ca3af' : '#16a34a', color: '#fff',
+              cursor: learning ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 600,
+            }}
+            title="Holt abgeschlossene ABBYY-Aufgaben ab und speichert was der Nutzer dort korrigiert hat"
+          >
+            {learning ? 'Lerne aus ABBYY…' : 'Aus ABBYY lernen'}
+          </button>
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            style={{
+              padding: '8px 16px', borderRadius: 6, border: '1px solid #e5e7eb',
+              background: '#fff', cursor: 'pointer', fontSize: 13, color: '#374151',
+            }}
+          >
+            {refreshing ? '⟳ Lädt...' : '⟳ Aktualisieren'}
+          </button>
+        </div>
+      </div>
+
+      {/* ABBYY-Lernstatus */}
+      <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '16px 20px', marginBottom: 20, display: 'flex', gap: 32, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div>
+          <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 2 }}>Warten auf ABBYY-Abschluss</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: learnStatus?.pending ? '#d97706' : '#6b7280' }}>
+            {learnStatus?.pending ?? '–'}
+          </div>
+        </div>
+        <div>
+          <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 2 }}>Dokumente aus ABBYY gelernt</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: '#16a34a' }}>{learnStatus?.learned ?? '–'}</div>
+        </div>
+        <div>
+          <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 2 }}>Korrekturen aus ABBYY gespeichert</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: '#1a3a5c' }}>{learnStatus?.corrections ?? '–'}</div>
+        </div>
+        <div style={{ flex: 1, fontSize: 12, color: '#6b7280', lineHeight: 1.6 }}>
+          Das System lernt automatisch was du in ABBYY korrigierst.
+          Beim nächsten Autopilot-Durchlauf werden abgeschlossene Aufgaben abgeholt.
+          Oder jetzt manuell mit "Aus ABBYY lernen".
+        </div>
+        {learnResult && (
+          <div style={{ fontSize: 13, padding: '6px 12px', borderRadius: 6, background: learnResult.startsWith('Fehler') ? '#fee2e2' : '#dcfce7', color: learnResult.startsWith('Fehler') ? '#991b1b' : '#166534', whiteSpace: 'nowrap' }}>
+            {learnResult}
+          </div>
+        )}
+      </div>
+
+      {/* ABBYY Export-Datei als Lernmaterial importieren */}
+      <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '16px 20px', marginBottom: 20 }}>
+        <div style={{ fontWeight: 600, fontSize: 14, color: '#1a3a5c', marginBottom: 4 }}>
+          ABBYY Export als Lernmaterial importieren
+        </div>
+        <div style={{ fontSize: 13, color: '#6b7280', marginBottom: 12, lineHeight: 1.6 }}>
+          Lade eine CSV/XML/Excel-Exportdatei aus ABBYY hoch. Das Programm liest die ausgefüllten Feldwerte
+          und speichert sie als Lernkorrekturen — ohne dass du die Rechnungen nochmal anfassen musst.
+          <br />
+          <strong>ABBYY einrichten:</strong> Projekt → Export → Textdatei (CSV) mit Feldnamen als Spaltenüberschriften.
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <label style={{
+            padding: '8px 16px', borderRadius: 6, border: 'none',
+            background: importing ? '#9ca3af' : '#1a3a5c', color: '#fff',
+            cursor: importing ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 600,
+          }}>
+            {importing ? 'Importiere…' : 'ABBYY Export hochladen (CSV/XML/Excel)'}
+            <input type="file" accept=".csv,.xml,.xlsx,.xls,.json" onChange={handleTrainingImport}
+              style={{ display: 'none' }} disabled={importing} />
+          </label>
+          <button
+            onClick={downloadTemplate}
+            style={{ padding: '8px 14px', borderRadius: 6, border: '1px solid #e5e7eb', background: '#f9fafb', cursor: 'pointer', fontSize: 13, color: '#374151' }}
+          >
+            Vorlage herunterladen
+          </button>
+          {importResult && (
+            <div style={{ fontSize: 13, padding: '6px 12px', borderRadius: 6, background: importResult.startsWith('Fehler') ? '#fee2e2' : '#dcfce7', color: importResult.startsWith('Fehler') ? '#991b1b' : '#166534' }}>
+              {importResult}
+            </div>
+          )}
+        </div>
       </div>
 
       {error && (

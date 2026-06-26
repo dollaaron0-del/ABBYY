@@ -7,6 +7,7 @@ const db = require('../database/db');
 const { extractText, hasEnoughText } = require('./ocrService');
 const { analyzeDocument } = require('./aiService');
 const { matchSupplier } = require('./supplierMatchingService');
+const { matchHotel } = require('./hotelMatchingService');
 
 /**
  * Log a processing step to the database.
@@ -73,20 +74,33 @@ function calculateAmpel(docType, confidence, supplierMatched, threshold) {
 
 /**
  * Apply learned field corrections for a known sender.
- * A correction is "learned" when the same human_value was entered ≥2 times
- * for the same sender + field. Only fills in fields that are currently null.
+ * Sucht sowohl nach Absendertext als auch nach Lieferanten-ID (stabiler bei
+ * leicht abweichenden Schreibweisen in aufeinanderfolgenden Uploads).
  */
-function applyLearnedCorrections(documentId, sender) {
-  if (!sender) return 0;
+function applyLearnedCorrections(documentId, sender, supplierId = null) {
+  if (!sender && !supplierId) return 0;
 
-  const learned = db.prepare(`
-    SELECT field_name, human_value, COUNT(*) as count
-    FROM bot_corrections
-    WHERE sender = ? AND human_value IS NOT NULL AND human_value != ''
-    GROUP BY field_name, human_value
-    HAVING count >= 2
-    ORDER BY count DESC
-  `).all(sender);
+  let learned;
+  if (supplierId) {
+    learned = db.prepare(`
+      SELECT field_name, human_value, bot_value, COUNT(*) as count
+      FROM bot_corrections
+      WHERE (sender_id = ? OR (sender = ? AND sender IS NOT NULL))
+        AND human_value IS NOT NULL AND human_value != ''
+      GROUP BY field_name, human_value
+      HAVING count >= 1
+      ORDER BY count DESC
+    `).all(supplierId, sender || '');
+  } else {
+    learned = db.prepare(`
+      SELECT field_name, human_value, bot_value, COUNT(*) as count
+      FROM bot_corrections
+      WHERE sender = ? AND human_value IS NOT NULL AND human_value != ''
+      GROUP BY field_name, human_value
+      HAVING count >= 1
+      ORDER BY count DESC
+    `).all(sender);
+  }
 
   if (learned.length === 0) return 0;
 
@@ -102,26 +116,29 @@ function applyLearnedCorrections(documentId, sender) {
     }
   } catch (_) {}
 
-  // Only fill fields that are currently null (don't override AI results)
+  // Build: most frequent human correction per field + which bot_value it replaces
   const learnedByField = {};
   for (const l of learned) {
-    if (!learnedByField[l.field_name]) learnedByField[l.field_name] = l.human_value;
-  }
-
-  let applied = 0;
-  for (const [field, value] of Object.entries(learnedByField)) {
-    if (fields[field] == null) {
-      fields[field] = value;
-      applied++;
+    if (!learnedByField[l.field_name]) {
+      learnedByField[l.field_name] = { human: l.human_value, bot: l.bot_value };
     }
   }
 
-  if (applied > 0) {
-    db.prepare('UPDATE documents SET extracted_fields = ?, learned_corrections_count = ? WHERE id = ?')
-      .run(JSON.stringify(fields), applied, documentId);
+  const appliedFields = [];
+  for (const [field, { human, bot }] of Object.entries(learnedByField)) {
+    const current = fields[field];
+    if (current == null || current === '' || String(current) === bot) {
+      fields[field] = human;
+      appliedFields.push(field);
+    }
   }
 
-  return applied;
+  if (appliedFields.length > 0) {
+    db.prepare('UPDATE documents SET extracted_fields = ?, learned_corrections_count = ? WHERE id = ?')
+      .run(JSON.stringify(fields), appliedFields.length, documentId);
+  }
+
+  return appliedFields;
 }
 
 /**
@@ -263,32 +280,84 @@ async function processDocument(documentId) {
   let finalAmpel = 'rot';
 
   try {
-    // Step 1: OCR
+    // Step 1: OCR (mit automatischem Retry)
     logStep(documentId, 'ocr', 'running', `OCR gestartet für ${path.basename(doc.file_path)}`);
     const ocrStart = Date.now();
-    try {
-      const ocrResult = await extractText(doc.file_path, doc.file_type);
-      ocrText = ocrResult.text;
-      ocrConfidence = ocrResult.confidence;
-
-      const ocrSecs = ((Date.now() - ocrStart) / 1000).toFixed(1);
-      logStep(
-        documentId,
-        'ocr',
-        'success',
-        `OCR abgeschlossen in ${ocrSecs}s. ${ocrText.length} Zeichen extrahiert. Konfidenz: ${ocrConfidence}%`
-      );
-    } catch (ocrErr) {
-      logStep(documentId, 'ocr', 'error', `OCR fehlgeschlagen: ${ocrErr.message}`);
-      // Continue with empty text - AI will classify as Unleserlich
-      ocrText = '';
+    const MAX_OCR_ATTEMPTS = 2;
+    let ocrAttempt = 0;
+    let ocrSuccess = false;
+    while (ocrAttempt < MAX_OCR_ATTEMPTS && !ocrSuccess) {
+      ocrAttempt++;
+      try {
+        const ocrResult = await extractText(doc.file_path, doc.file_type);
+        ocrText = ocrResult.text;
+        ocrConfidence = ocrResult.confidence;
+        ocrSuccess = true;
+        const ocrSecs = ((Date.now() - ocrStart) / 1000).toFixed(1);
+        const attempt = ocrAttempt > 1 ? ` (Versuch ${ocrAttempt})` : '';
+        logStep(
+          documentId,
+          'ocr',
+          'success',
+          `OCR abgeschlossen in ${ocrSecs}s${attempt}. ${ocrText.length} Zeichen extrahiert. Konfidenz: ${ocrConfidence}%`
+        );
+      } catch (ocrErr) {
+        if (ocrAttempt < MAX_OCR_ATTEMPTS) {
+          logStep(documentId, 'ocr', 'running', `OCR Versuch ${ocrAttempt} fehlgeschlagen, wiederhole... (${ocrErr.message})`);
+          await new Promise((r) => setTimeout(r, 2000));
+        } else {
+          logStep(documentId, 'ocr', 'error', `OCR nach ${MAX_OCR_ATTEMPTS} Versuchen fehlgeschlagen: ${ocrErr.message}`);
+          ocrText = '';
+        }
+      }
     }
 
     // Step 2: AI Analysis
+    // Voranalyse: Absender ermitteln damit Lernbeispiele in den KI-Prompt geladen werden.
+    // Zweistufig:
+    //   1. Regelbasierter Scan (findet nur Firmen mit GmbH/AG/... Suffix)
+    //   2. Zeilenweise Suche im OCR-Text gegen Lieferantendatenbank (findet alle)
+    const { analyzeWithRules } = require('./aiService');
+    const quickScan = ocrText ? analyzeWithRules(ocrText) : null;
+    let senderHint = quickScan && quickScan.sender ? quickScan.sender : null;
+    let preSupplierId = null;
+
+    if (senderHint) {
+      // Regel-Scan hat Treffer → direkt gegen DB prüfen
+      try {
+        const preMatch = matchSupplier(senderHint, null, null);
+        if (preMatch.matched) preSupplierId = preMatch.supplier_id;
+      } catch (_) {}
+    }
+
+    if (!preSupplierId && ocrText) {
+      // Kein Treffer vom Regel-Scan (z.B. Lieferant ohne GmbH/AG im Namen):
+      // Erste 20 sinnvolle Zeilen einzeln gegen Lieferantenliste testen.
+      // Das stellt sicher, dass auch für "Müller Bäckerei" o.ä. Lernkorrekturen
+      // geladen werden, auch wenn der Name keine Rechtsform enthält.
+      try {
+        const lines = ocrText
+          .split('\n')
+          .map((l) => l.trim())
+          .filter((l) => l.length >= 5 && !/^\d/.test(l)) // keine reinen Zahlenzeilen
+          .slice(0, 20);
+        for (const line of lines) {
+          const lineMatch = matchSupplier(line, null, null);
+          if (lineMatch.matched && lineMatch.score >= 82) {
+            preSupplierId = lineMatch.supplier_id;
+            if (!senderHint) senderHint = lineMatch.supplier_name;
+            logStep(documentId, 'ai_analysis', 'info',
+              `Lieferant per Zeilenscan gefunden: "${lineMatch.supplier_name}" (Score: ${lineMatch.score}%) → Lernhinweise geladen`);
+            break;
+          }
+        }
+      } catch (_) {}
+    }
+
     logStep(documentId, 'ai_analysis', 'running', 'KI-Analyse gestartet (Ollama)');
     const aiStart = Date.now();
     try {
-      aiResult = await analyzeDocument(ocrText);
+      aiResult = await analyzeDocument(ocrText, senderHint, preSupplierId);
       const aiSecs = ((Date.now() - aiStart) / 1000).toFixed(1);
       logStep(
         documentId,
@@ -307,43 +376,108 @@ async function processDocument(documentId) {
       };
     }
 
-    // Step 3: Supplier matching
-    if (aiResult.sender) {
-      logStep(documentId, 'supplier_matching', 'running', `Lieferantenabgleich für: ${aiResult.sender}`);
+    // Step 3: Supplier matching (Name + IBAN + USt-ID)
+    const extractedFields = aiResult.extracted_fields || {};
+    const extractedIban = extractedFields.iban || null;
+    const extractedUstId = extractedFields.ust_id || null;
+
+    if (aiResult.sender || extractedIban || extractedUstId) {
+      const matchInfo = [aiResult.sender, extractedIban && `IBAN: ${extractedIban}`, extractedUstId && `USt-ID: ${extractedUstId}`].filter(Boolean).join(' | ');
+      logStep(documentId, 'supplier_matching', 'running', `Lieferantenabgleich: ${matchInfo}`);
       try {
-        matchResult = matchSupplier(aiResult.sender);
+        matchResult = matchSupplier(aiResult.sender, extractedIban, extractedUstId);
         logStep(
           documentId,
           'supplier_matching',
           matchResult.matched ? 'success' : 'info',
           matchResult.matched
-            ? `Lieferant gefunden: ${matchResult.supplier_name} (Score: ${matchResult.score}%)`
-            : `Kein Lieferant gefunden für: ${aiResult.sender}`
+            ? `Lieferant gefunden: ${matchResult.supplier_name} (Score: ${matchResult.score}%, Methode: ${matchResult.match_method || 'name'}${matchResult.vendor_code ? ', Nr: ' + matchResult.vendor_code : ''})`
+            : `Kein Lieferant gefunden für: ${aiResult.sender || 'unbekannt'}`
         );
       } catch (matchErr) {
         logStep(documentId, 'supplier_matching', 'error', `Lieferantenabgleich fehlgeschlagen: ${matchErr.message}`);
       }
     } else {
-      logStep(documentId, 'supplier_matching', 'info', 'Kein Absender vom KI erkannt, Lieferantenabgleich übersprungen');
+      logStep(documentId, 'supplier_matching', 'info', 'Kein Absender/IBAN/USt-ID erkannt, Abgleich übersprungen');
     }
 
-    // Step 4: Calculate traffic light
+    // Step 3b: Hotel matching – für welche Geschäftsstelle ist die Rechnung?
+    let hotelMatch = null;
+    try {
+      hotelMatch = matchHotel(ocrText);
+      if (hotelMatch) {
+        logStep(documentId, 'hotel_matching', 'success', `Hotel erkannt: ${hotelMatch.hotel_name} (Kostenstelle: ${hotelMatch.hotel_code}, Score: ${hotelMatch.score}%)`);
+      } else {
+        logStep(documentId, 'hotel_matching', 'info', 'Keine Geschäftsstelle im Dokument erkannt');
+      }
+    } catch (hotelErr) {
+      logStep(documentId, 'hotel_matching', 'error', `Hotel-Erkennung fehlgeschlagen: ${hotelErr.message}`);
+    }
+
+    // Step 4: Konfidenz nach Lieferantenabgleich erhöhen
+    // Ollama schätzt oft konservativ – wenn wir den Lieferanten eindeutig kennen,
+    // ist die tatsächliche Sicherheit deutlich höher als Ollamals Schätzung.
+    let finalConfidence = aiResult.confidence;
+    if (matchResult.matched) {
+      if (matchResult.match_method === 'iban' || matchResult.match_method === 'ust_id') {
+        // Exakte Kennung (IBAN/USt-ID) → praktisch 100% Sicherheit
+        finalConfidence = Math.max(finalConfidence, 92);
+      } else if (matchResult.score >= 90) {
+        finalConfidence = Math.max(finalConfidence, 85);
+      } else if (matchResult.score >= 75) {
+        finalConfidence = Math.max(finalConfidence, 78);
+      }
+      if (finalConfidence > aiResult.confidence) {
+        logStep(documentId, 'confidence_boost', 'info',
+          `Konfidenz erhöht: ${aiResult.confidence}% → ${finalConfidence}% (Lieferant gefunden per ${matchResult.match_method || 'name'}, Score: ${matchResult.score}%)`);
+      }
+    }
+
+    // Step 4b: Calculate traffic light
     const threshold = getConfidenceThreshold();
-    finalAmpel = calculateAmpel(aiResult.doc_type, aiResult.confidence, matchResult.matched, threshold);
+    finalAmpel = calculateAmpel(aiResult.doc_type, finalConfidence, matchResult.matched, threshold);
 
-    logStep(documentId, 'ampel', 'success', `Ampel: ${finalAmpel} (Typ: ${aiResult.doc_type}, Konfidenz: ${aiResult.confidence}%, Lieferant: ${matchResult.matched ? 'ja' : 'nein'})`);
+    logStep(documentId, 'ampel', 'success', `Ampel: ${finalAmpel} (Typ: ${aiResult.doc_type}, Konfidenz: ${finalConfidence}%, Lieferant: ${matchResult.matched ? 'ja' : 'nein'})`);
 
-    // Step 4b: Apply learned text corrections for this sender
-    const learnedCount = applyLearnedCorrections(documentId, aiResult.sender);
-    if (learnedCount > 0) {
-      logStep(documentId, 'learned_corrections', 'info', `${learnedCount} gelernte Feld-Korrekturen für Absender "${aiResult.sender}" automatisch angewendet.`);
+    // Step 4c: Apply learned text corrections for this sender (sucht auch per sender_id)
+    const learnedFields = applyLearnedCorrections(documentId, aiResult.sender, matchResult.supplier_id);
+    if (learnedFields.length > 0) {
+      logStep(documentId, 'learned_corrections', 'info', `${learnedFields.length} gelernte Feld-Korrekturen für Absender "${aiResult.sender}" automatisch angewendet.`);
+      // Jede angewendete Lernkorrektur = das System kennt diesen Lieferanten gut → Konfidenz steigt
+      const learnBoost = Math.min(15, learnedFields.length * 4);
+      const boostedConf = Math.min(95, finalConfidence + learnBoost);
+      if (boostedConf > finalConfidence) {
+        logStep(documentId, 'confidence_boost', 'info',
+          `Konfidenz durch ${learnedFields.length} Lernkorrekturen erhöht: ${finalConfidence}% → ${boostedConf}%`);
+        finalConfidence = boostedConf;
+      }
     }
 
-    // Step 4c: Apply learned region-based corrections (OCR specific areas)
+    // Step 4d: Apply learned region-based corrections (OCR specific areas)
     const regionCount = await applyLearnedRegions(documentId, aiResult.sender);
     if (regionCount > 0) {
       logStep(documentId, 'learned_regions', 'info', `${regionCount} Felder via gelernte Markierungsbereiche für "${aiResult.sender}" extrahiert.`);
     }
+
+    // Step 4e: Feldherkünfte zusammenstellen (für UI-Anzeige)
+    const fieldSources = {};
+    // Alle KI-extrahierten Felder → Quelle "ki"
+    if (aiResult.extracted_fields) {
+      for (const [key, value] of Object.entries(aiResult.extracted_fields)) {
+        if (value != null && String(value).trim()) fieldSources[key] = 'ki';
+      }
+    }
+    if (aiResult.sender) fieldSources.absender = 'ki';
+    // Lieferant per Datenbank-Abgleich gefunden → Absender + ggf. IBAN/USt-ID aus DB
+    if (matchResult.matched) {
+      fieldSources.absender = 'datenbank';
+      if (matchResult.match_method === 'iban') fieldSources.iban = 'datenbank';
+      if (matchResult.match_method === 'ust_id') fieldSources.ust_id = 'datenbank';
+    }
+    // Hotel per Datenbank → Kostenstelle aus DB
+    if (hotelMatch) fieldSources.hotel_code = 'datenbank';
+    // Gelernte Korrekturen überschreiben
+    for (const field of learnedFields) fieldSources[field] = 'gelernt';
 
     // Step 5: Save results to DB
     db.prepare(`
@@ -358,6 +492,10 @@ async function processDocument(documentId) {
         ai_reasoning = ?,
         ampel = ?,
         extracted_fields = ?,
+        field_sources = ?,
+        hotel_id = ?,
+        hotel_code = ?,
+        hotel_name = ?,
         processed_at = datetime('now')
       WHERE id = ?
     `).run(
@@ -365,16 +503,21 @@ async function processDocument(documentId) {
       aiResult.sender,
       matchResult.matched ? 1 : 0,
       matchResult.supplier_id || null,
-      aiResult.confidence,
+      finalConfidence,
       JSON.stringify({
         doc_type: aiResult.doc_type,
         sender: aiResult.sender,
         confidence: aiResult.confidence,
         ampel: aiResult.ampel,
+        vendor_code: matchResult.vendor_code || null,
       }),
       aiResult.reasoning,
       finalAmpel,
       aiResult.extracted_fields ? JSON.stringify(aiResult.extracted_fields) : null,
+      JSON.stringify(fieldSources),
+      hotelMatch ? hotelMatch.hotel_id : null,
+      hotelMatch ? hotelMatch.hotel_code : null,
+      hotelMatch ? hotelMatch.hotel_name : null,
       documentId
     );
 

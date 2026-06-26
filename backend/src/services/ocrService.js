@@ -65,15 +65,37 @@ function withTimeout(promise, ms, label) {
 
 /**
  * Bild vorverarbeiten für bessere OCR-Qualität.
- * Sehr große Bilder werden verkleinert (beschleunigt OCR deutlich).
+ * - EXIF-Rotation korrigieren (Handy-Fotos kommen oft auf der Seite an)
+ * - Bild auf maximal 2000px begrenzen
+ * - Graustufen + Kontrast + Schärfen für bessere Texterkennung
  */
 async function preprocessImage(inputPath) {
   const tmpPath = path.join(os.tmpdir(), `ocr_prep_${Date.now()}.png`);
   await sharp(inputPath)
-    .resize({ width: 2000, height: 2000, fit: 'inside', withoutEnlargement: true })
+    .rotate()                                                           // EXIF-Rotation auto-korrigieren
+    .resize({ width: 2400, height: 2400, fit: 'inside', withoutEnlargement: true })
     .grayscale()
     .normalize()
+    .linear(1.2, -15)                                                   // Kontrast leicht erhöhen
     .sharpen({ sigma: 1.5 })
+    .png({ compressionLevel: 1 })
+    .toFile(tmpPath);
+  return tmpPath;
+}
+
+/**
+ * Zweiter OCR-Versuch mit aggressiverer Bildaufbereitung für schräge/schlechte Scans.
+ */
+async function preprocessImageAggressive(inputPath) {
+  const tmpPath = path.join(os.tmpdir(), `ocr_prep2_${Date.now()}.png`);
+  await sharp(inputPath)
+    .rotate()
+    .resize({ width: 2400, height: 2400, fit: 'inside', withoutEnlargement: true })
+    .grayscale()
+    .normalize()
+    .linear(1.5, -40)                                                   // Stärkerer Kontrast → hilft bei leichter Schräge
+    .median(1)                                                          // Rauschen reduzieren
+    .sharpen({ sigma: 2.0 })
     .png({ compressionLevel: 1 })
     .toFile(tmpPath);
   return tmpPath;
@@ -82,53 +104,147 @@ async function preprocessImage(inputPath) {
 const OCR_TIMEOUT_MS = 120000; // 2 Minuten pro Dokument maximal
 
 /**
- * Text aus einer PDF-Datei extrahieren.
- * Converts the first page to an image via Ghostscript (or pdftoppm), then OCRs it.
+ * Versucht Text direkt aus einem digitalen PDF zu lesen (kein OCR nötig).
+ * Gibt null zurück wenn das PDF gescannt ist oder zu wenig Text enthält.
+ * Wirft einen verständlichen Fehler bei passwortgeschützten Dateien.
  */
-async function extractFromPdf(filePath, language) {
-  let imgPath = null;
+async function tryDirectPdfExtract(filePath) {
   try {
-    imgPath = await pdfFirstPageToImage(filePath);
-    return await extractFromImage(imgPath, language);
-  } catch (convErr) {
-    // Fallback: try Tesseract directly on PDF (slower but sometimes works)
-    console.warn(`[OCR] PDF-Bildkonvertierung fehlgeschlagen, direkter Fallback: ${convErr.message}`);
-    const worker = await getWorker(language);
-    const result = await withTimeout(worker.recognize(filePath), OCR_TIMEOUT_MS, 'PDF-OCR:');
-    return {
-      text: result.data.text || '',
-      confidence: Math.round(result.data.confidence || 0),
-    };
-  } finally {
-    if (imgPath && fs.existsSync(imgPath)) fs.unlink(imgPath, () => {});
+    const pdfParse = require('pdf-parse');
+    const buffer = fs.readFileSync(filePath);
+    const data = await pdfParse(buffer, { max: 5 });
+    const cleaned = cleanOcrText(data.text || '');
+    if (hasEnoughText(cleaned)) {
+      console.log(`[OCR] Digitales PDF erkannt – Text direkt extrahiert (${cleaned.length} Zeichen, kein OCR nötig)`);
+      return { text: cleaned, confidence: 99 };
+    }
+  } catch (err) {
+    const msg = (err.message || '').toLowerCase();
+    if (msg.includes('password') || msg.includes('encrypt') || msg.includes('permission')) {
+      throw new Error(
+        'Diese PDF-Datei ist passwortgeschützt und kann nicht verarbeitet werden. ' +
+        'Bitte eine unverschlüsselte Version hochladen oder das Passwort beim Absender erfragen.'
+      );
+    }
   }
+  return null;
 }
 
 /**
+ * Alle Seiten einer PDF als Bilder exportieren (max. MAX_PDF_PAGES).
+ * Gibt ein Array von temporären Bildpfaden zurück – Aufrufer muss diese löschen.
+ */
+const MAX_PDF_PAGES = 5;
+
+async function pdfToImages(pdfPath) {
+  if (_pdfTool === undefined) _pdfTool = findPdfTool();
+  if (!_pdfTool) throw new Error('Kein PDF-Konvertierer gefunden (weder pdftoppm noch Ghostscript)');
+
+  const stamp = Date.now();
+
+  if (_pdfTool.tool === 'pdftoppm') {
+    const tmpBase = path.join(os.tmpdir(), `pdfpages_${stamp}`);
+    await execFileAsync('pdftoppm', ['-png', '-r', '150', '-f', '1', '-l', String(MAX_PDF_PAGES), pdfPath, tmpBase]);
+    const results = [];
+    for (let i = 1; i <= MAX_PDF_PAGES; i++) {
+      for (const suffix of [`-${i}.png`, `-0${i}.png`, `-00${i}.png`]) {
+        const candidate = tmpBase + suffix;
+        if (fs.existsSync(candidate)) { results.push(candidate); break; }
+      }
+    }
+    if (results.length === 0) throw new Error('pdftoppm: keine Ausgabebilder gefunden');
+    return results;
+  }
+
+  // Ghostscript: %d Platzhalter für Seitennummern
+  const tmpPattern = path.join(os.tmpdir(), `pdfpages_${stamp}_%d.png`);
+  await execFileAsync(_pdfTool.exe, [
+    '-dNOPAUSE', '-dBATCH', '-dSAFER',
+    '-sDEVICE=png16m', '-r150',
+    `-dFirstPage=1`, `-dLastPage=${MAX_PDF_PAGES}`,
+    `-sOutputFile=${tmpPattern}`,
+    pdfPath,
+  ]);
+  const results = [];
+  for (let i = 1; i <= MAX_PDF_PAGES; i++) {
+    const candidate = path.join(os.tmpdir(), `pdfpages_${stamp}_${i}.png`);
+    if (fs.existsSync(candidate)) results.push(candidate);
+  }
+  if (results.length === 0) throw new Error('Ghostscript: keine Ausgabebilder gefunden');
+  return results;
+}
+
+/**
+ * Text aus einer PDF-Datei extrahieren.
+ * Strategie: 1) Direktextraktion (digitales PDF) → 2) Bildbasierte OCR aller Seiten → 3) Tesseract-Fallback
+ */
+async function extractFromPdf(filePath, language) {
+  // Strategie 1: Digitales PDF – Text direkt lesen ohne OCR
+  // Passwort-Fehler werden direkt nach oben weitergegeben (kein Fallback auf OCR sinnvoll)
+  const direct = await tryDirectPdfExtract(filePath);
+  if (direct) return direct;
+
+  // Strategie 2: Gescanntes PDF – alle Seiten als Bilder, dann OCR
+  let imgPaths = [];
+  try {
+    imgPaths = await pdfToImages(filePath);
+    const pageResults = await Promise.all(imgPaths.map((p) => extractFromImage(p, language)));
+    const combinedText = pageResults.map((r, i) => `[Seite ${i + 1}]\n${r.text}`).join('\n\n');
+    const avgConfidence = Math.round(pageResults.reduce((s, r) => s + r.confidence, 0) / pageResults.length);
+    return { text: combinedText, confidence: avgConfidence };
+  } catch (convErr) {
+    // Strategie 3: Tesseract direkt auf PDF (langsamer, nur Seite 1)
+    console.warn(`[OCR] PDF-Seitenkonvertierung fehlgeschlagen, direkter Fallback: ${convErr.message}`);
+    const worker = await getWorker(language);
+    const result = await withTimeout(worker.recognize(filePath), OCR_TIMEOUT_MS, 'PDF-OCR:');
+    return { text: result.data.text || '', confidence: Math.round(result.data.confidence || 0) };
+  } finally {
+    for (const p of imgPaths) {
+      if (fs.existsSync(p)) fs.unlink(p, () => {});
+    }
+  }
+}
+
+const LOW_CONFIDENCE_THRESHOLD = 55; // Unter diesem Wert → zweiter Versuch mit aggressiverer Aufbereitung
+
+/**
  * Text aus Bilddateien extrahieren (jpg, png, tiff, bmp).
+ * Bei schlechter OCR-Konfidenz (schräge/schlechte Scans) wird automatisch
+ * ein zweiter Versuch mit stärkerem Kontrast gestartet.
  */
 async function extractFromImage(filePath, language) {
-  let preprocessedPath = null;
+  let prep1 = null;
+  let prep2 = null;
   try {
-    preprocessedPath = await preprocessImage(filePath);
+    // Erster Versuch: Standard-Aufbereitung
+    prep1 = await preprocessImage(filePath);
     const worker = await getWorker(language);
-    const result = await withTimeout(worker.recognize(preprocessedPath), OCR_TIMEOUT_MS, 'Bild-OCR:');
-    return {
-      text: result.data.text || '',
-      confidence: Math.round(result.data.confidence || 0),
-    };
+    const result1 = await withTimeout(worker.recognize(prep1), OCR_TIMEOUT_MS, 'Bild-OCR:');
+    const conf1 = Math.round(result1.data.confidence || 0);
+
+    // Zweiter Versuch bei niedriger Konfidenz (z.B. schräger Scan)
+    if (conf1 < LOW_CONFIDENCE_THRESHOLD) {
+      console.log(`[OCR] Konfidenz ${conf1}% – zweiter Versuch mit aggressiverer Aufbereitung`);
+      prep2 = await preprocessImageAggressive(filePath);
+      const result2 = await withTimeout(worker.recognize(prep2), OCR_TIMEOUT_MS, 'Bild-OCR (Versuch 2):');
+      const conf2 = Math.round(result2.data.confidence || 0);
+
+      // Besseres Ergebnis gewinnt
+      if (conf2 > conf1) {
+        console.log(`[OCR] Zweiter Versuch besser: ${conf1}% → ${conf2}%`);
+        return { text: result2.data.text || '', confidence: conf2 };
+      }
+    }
+
+    return { text: result1.data.text || '', confidence: conf1 };
   } catch (err) {
     // Fallback: ohne Vorverarbeitung direkt erkennen
     const worker = await getWorker(language);
     const result = await withTimeout(worker.recognize(filePath), OCR_TIMEOUT_MS, 'Bild-OCR (Fallback):');
-    return {
-      text: result.data.text || '',
-      confidence: Math.round(result.data.confidence || 0),
-    };
+    return { text: result.data.text || '', confidence: Math.round(result.data.confidence || 0) };
   } finally {
-    if (preprocessedPath && fs.existsSync(preprocessedPath)) {
-      fs.unlink(preprocessedPath, () => {});
-    }
+    if (prep1 && fs.existsSync(prep1)) fs.unlink(prep1, () => {});
+    if (prep2 && fs.existsSync(prep2)) fs.unlink(prep2, () => {});
   }
 }
 
@@ -152,7 +268,7 @@ async function extractText(filePath, fileType) {
     throw new Error(`Nicht unterstützter Dateityp für OCR: ${type}`);
   }
 
-  result.text = cleanOcrText(result.text);
+  result.text = fixOcrConfusions(cleanOcrText(result.text));
   return result;
 }
 
@@ -164,6 +280,31 @@ function cleanOcrText(text) {
     .replace(/\n{3,}/g, '\n\n')
     .replace(/[^\x20-\x7E\xA0-\xFF\n]/g, '')
     .trim();
+}
+
+/**
+ * Korrigiert typische Tesseract-Zeichenverwechslungen in kritischen Feldern.
+ * Wendet nur kontextabhängige Korrekturen an – z.B. in IBAN-ähnlichen Mustern.
+ */
+function fixOcrConfusions(text) {
+  if (!text) return text;
+
+  // IBAN: nur Großbuchstaben und Ziffern erlaubt → O→0, I/l→1 in IBAN-Blöcken
+  text = text.replace(/\b([A-Z]{2}\d{2}[\s]?)([A-Z0-9\s]{10,30})\b/g, (match) => {
+    return match
+      .replace(/O/g, '0')
+      .replace(/[Il]/g, '1')
+      .replace(/B(?=\d)/g, '8');
+  });
+
+  // Beträge: Komma-Dezimal-Zahlen – l→1, O→0
+  text = text.replace(/\b\d[\d.]*[lI][\d,]*\b/g, (m) => m.replace(/[lI]/g, '1'));
+  text = text.replace(/\b\d[\d.]*O[\d,]*\b/g, (m) => m.replace(/O/g, '0'));
+
+  // Rechnungsnummern-Bereich: | → I (häufig am Zeilenanfang)
+  text = text.replace(/^\|/gm, 'I');
+
+  return text;
 }
 
 function hasEnoughText(text) {
@@ -212,9 +353,7 @@ function findPdfTool() {
 let _pdfTool = undefined; // cached after first call
 
 /**
- * Convert the first page of a PDF to a PNG temp file.
- * Uses pdftoppm if available (Docker), otherwise Ghostscript (Windows).
- * Returns the path to the created PNG. Caller must delete it when done.
+ * Convert only the first page of a PDF to a PNG (used for preview/thumbnail).
  */
 async function pdfFirstPageToImage(pdfPath) {
   if (_pdfTool === undefined) _pdfTool = findPdfTool();

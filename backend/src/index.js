@@ -99,6 +99,7 @@ function startProcessingWatchdog() {
 const documentsRouter = require('./routes/documents');
 const analysisRouter = require('./routes/analysis');
 const suppliersRouter = require('./routes/suppliers');
+const hotelsRouter = require('./routes/hotels');
 const settingsRouter = require('./routes/settings');
 const abbyyRouter = require('./routes/abbyy');
 const abbyyBotRouter = require('./routes/abbyyBot');
@@ -117,12 +118,7 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 app.use('/uploads', express.static(UPLOADS_PATH));
 
-// Frontend statisch ausliefern (eingebettet in die EXE)
-const PUBLIC_PATH = path.join(__dirname, '../public');
-if (fs.existsSync(PUBLIC_PATH)) {
-  app.use(express.static(PUBLIC_PATH));
-}
-
+// API-Routen VOR dem Static-Handler registrieren
 app.get('/api/health', (_req, res) => {
   res.json({
     status: 'ok',
@@ -135,10 +131,17 @@ app.get('/api/health', (_req, res) => {
 app.use('/api/documents', documentsRouter);
 app.use('/api/analysis', analysisRouter);
 app.use('/api/suppliers', suppliersRouter);
+app.use('/api/hotels', hotelsRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/abbyy', abbyyRouter);
 app.use('/api/abbyy/bot', abbyyBotRouter);
 app.use('/api/reports', reportsRouter);
+
+// Frontend statisch ausliefern (eingebettet in die EXE)
+const PUBLIC_PATH = path.join(__dirname, '../public');
+if (fs.existsSync(PUBLIC_PATH)) {
+  app.use(express.static(PUBLIC_PATH));
+}
 
 // SPA Fallback: alle nicht-API Routen → index.html
 app.get('*', (req, res) => {

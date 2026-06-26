@@ -28,6 +28,8 @@ const db = require('../database/db');
 const ENDPOINTS = {
   ping: '/api/v1/server/version',
   pendingTasks: '/api/v1/tasks?stage=Verification&state=Pending',
+  // Abgeschlossene Aufgaben der letzten 24h – nach ABBYY-Version ggf. anpassen
+  completedTasks: '/api/v1/tasks?stage=Verification&state=Completed',
   documentFields: (docId) => `/api/v1/documents/${docId}/fields`,
   updateFields: (docId) => `/api/v1/documents/${docId}/fields`,
   completeTask: (taskId) => `/api/v1/tasks/${taskId}/complete`,
@@ -180,6 +182,64 @@ async function completeTask(taskId, documentId) {
   return { success: true, data: res.data };
 }
 
+/**
+ * Abgeschlossene Verifikations-Aufgaben von ABBYY holen.
+ * Liefert nur Aufgaben zu Dokumenten, die WIR an ABBYY geschickt haben
+ * und wo noch kein Lernen stattgefunden hat (abbyy_learned_at IS NULL).
+ */
+async function fetchCompletedTasks() {
+  const cfg = getConfig();
+
+  if (cfg.simulation) {
+    // Simulation: forwarded-Dokumente als "gerade in ABBYY abgeschlossen" behandeln
+    const docs = db.prepare(`
+      SELECT id, sender, sender_id, abbyy_sent_fields, extracted_fields
+      FROM documents
+      WHERE status = 'forwarded'
+        AND abbyy_sent_fields IS NOT NULL
+        AND abbyy_learned_at IS NULL
+      ORDER BY processed_at DESC LIMIT 20
+    `).all();
+    return docs.map((d) => ({
+      taskId: `sim-completed-${d.id}`,
+      documentId: d.id,
+      simulated: true,
+      // Im Simulationsmodus: extracted_fields = "manuell korrigierte" Endwerte
+      finalFields: safeParse(d.extracted_fields) || {},
+    }));
+  }
+
+  if (!cfg.apiUrl) return [];
+
+  try {
+    const res = await axios.get(cfg.apiUrl + ENDPOINTS.completedTasks, {
+      headers: authHeaders(cfg),
+      timeout: 20000,
+    });
+    const tasks = res.data.tasks || res.data || [];
+    // Nur Aufgaben zurückgeben die wir kennen (abbyy_task_id in unserer DB)
+    const result = [];
+    for (const t of tasks) {
+      const taskId = t.id || t.taskId;
+      const docId = t.documentId || t.document_id;
+      // Prüfen ob wir dieses Dokument kennen und noch nicht gelernt haben
+      const doc = docId
+        ? db.prepare('SELECT id FROM documents WHERE (id = ? OR abbyy_task_id = ?) AND abbyy_learned_at IS NULL').get(docId, taskId)
+        : db.prepare('SELECT id FROM documents WHERE abbyy_task_id = ? AND abbyy_learned_at IS NULL').get(taskId);
+      if (!doc) continue;
+      result.push({
+        taskId,
+        documentId: doc.id,
+        finalFields: t.fields || {},
+      });
+    }
+    return result;
+  } catch (err) {
+    console.warn('[Connector] fetchCompletedTasks fehlgeschlagen:', err.message);
+    return [];
+  }
+}
+
 function safeParse(str) {
   if (!str) return null;
   try { return typeof str === 'string' ? JSON.parse(str) : str; } catch (_) { return null; }
@@ -190,6 +250,7 @@ module.exports = {
   isConfigured,
   testConnection,
   fetchPendingTasks,
+  fetchCompletedTasks,
   fetchDocumentFields,
   updateDocumentFields,
   completeTask,

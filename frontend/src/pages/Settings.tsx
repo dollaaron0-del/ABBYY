@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getSettings, updateSettings, testAbbyyConnection, getOllamaModels, getOllamaHealth } from '../api/settings'
+import apiClient from '../api/client'
 import type { Settings as SettingsType, OllamaModel } from '../types'
 
 const S = {
@@ -66,6 +67,8 @@ export default function SettingsPage() {
   const [testingAbbyy, setTestingAbbyy] = useState(false)
   const [ollamaModels, setOllamaModels] = useState<OllamaModel[]>([])
   const [ollamaStatus, setOllamaStatus] = useState<{ ok: boolean; msg: string } | null>(null)
+  const [syncStatus, setSyncStatus] = useState<{ ok: boolean; msg: string } | null>(null)
+  const [syncing, setSyncing] = useState(false)
 
   useEffect(() => {
     if (settings) {
@@ -111,6 +114,22 @@ export default function SettingsPage() {
       setAbbyyStatus({ ok: false, msg: err.message })
     } finally {
       setTestingAbbyy(false)
+    }
+  }
+
+  async function syncSuppliers() {
+    setSyncing(true)
+    setSyncStatus(null)
+    try {
+      const res = await apiClient.post('/abbyy/sync-suppliers', {})
+      const d = res.data
+      setSyncStatus({ ok: true, msg: `${d.imported} neu, ${d.updated} aktualisiert (${d.total} gesamt). Quelle: ${d.source}` })
+      showToast(`Lieferanten synchronisiert: ${d.imported + d.updated} Einträge`)
+    } catch (err: any) {
+      const msg = err.response?.data?.error || err.message
+      setSyncStatus({ ok: false, msg })
+    } finally {
+      setSyncing(false)
     }
   }
 
@@ -317,6 +336,68 @@ export default function SettingsPage() {
             </div>
           </>
         )}
+      </div>
+
+      {/* Lieferanten-Sync */}
+      <div style={S.section}>
+        <div style={S.sectionTitle}>Lieferanten-Sync</div>
+        <div style={S.sectionSub}>
+          Importiert Lieferanten automatisch aus ABBYY / ERP / Buchhaltungssystem.
+          Unterstützt HTTP-REST-Endpunkt, CSV-Datei oder Excel auf Netzlaufwerk (z.B. <code>\\\\Server\Freigabe\lieferanten.xlsx</code>).
+          Das System versucht auch automatisch bekannte ABBYY-API-Pfade.
+        </div>
+
+        <div style={S.group}>
+          <label style={S.label}>Sync-URL oder Dateipfad</label>
+          <input
+            style={S.input}
+            value={form.abbyy_vendor_sync_url || ''}
+            onChange={(e) => setField('abbyy_vendor_sync_url', e.target.value)}
+            placeholder="http://erp-server/api/vendors  ODER  \\Server\Freigabe\lieferanten.xlsx"
+          />
+          <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>
+            CSV-Spalten (Semikolon): Name; IBAN; Lieferantennummer; USt_ID; Kategorie
+          </div>
+        </div>
+
+        <div style={{ ...S.grid, gridTemplateColumns: '1fr 2fr' }}>
+          <div style={S.group}>
+            <label style={S.label}>Auto-Sync (Stunden, 0 = aus)</label>
+            <input
+              type="number"
+              style={S.input}
+              value={form.abbyy_vendor_sync_interval_hours || '0'}
+              onChange={(e) => setField('abbyy_vendor_sync_interval_hours', e.target.value)}
+              min={0}
+              step={1}
+              placeholder="0"
+            />
+          </div>
+          <div style={S.group}>
+            <label style={S.label}>Letzter Sync</label>
+            <div style={{ padding: '9px 12px', fontSize: 13, color: '#6b7280' }}>
+              {form.abbyy_vendor_sync_last
+                ? new Date(form.abbyy_vendor_sync_last).toLocaleString('de-DE')
+                : 'Noch nie synchronisiert'}
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 4 }}>
+          <button
+            type="button"
+            style={S.btn('secondary')}
+            onClick={syncSuppliers}
+            disabled={syncing}
+          >
+            {syncing ? 'Synchronisiere…' : 'Jetzt synchronisieren'}
+          </button>
+          {syncStatus && (
+            <span style={{ fontSize: 13, color: syncStatus.ok ? '#16a34a' : '#dc2626' }}>
+              {syncStatus.ok ? '✓ ' : '✗ '}{syncStatus.msg}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Claude API Fallback */}
